@@ -31,6 +31,29 @@ const num = (v) => {
 };
 const sgToPlato = (sg) => sg == null ? null : -616.868 + 1111.14*sg - 630.272*sg*sg + 135.997*sg*sg*sg;
 const platoToSg = (p) => p == null ? null : 1 + p/(258.6 - (p/258.2)*227.1);
+
+// Densité abrégée : on stocke en SG (1.059) mais on affiche/saisit "59".
+function sgToAbbr(sg){
+  if (sg == null) return "—";
+  let p = (sg - 1) * 1000;
+  p = Math.round(p * 10) / 10;
+  return (Math.abs(p - Math.round(p)) < 1e-9) ? String(Math.round(p)) : String(p);
+}
+// Saisie : "59" -> 1.059. Tolère aussi une saisie directe en SG (1.059) par sécurité.
+function parseDens(v){
+  const n = num(v);
+  if (n == null) return null;
+  if (n > 0.95 && n < 1.25) return n;   // déjà saisi en SG
+  return 1 + n / 1000;                  // saisi en abrégé (points)
+}
+
+// Ordre d'affichage des fermenteurs demandé (les non listés vont à la fin).
+const FERM_ORDER = [
+  "A","B","C","D","E","F","G","H","CC #1","CC #2","CC #3","CC #4","Alphonse","Brigitte","Didier","Corinne",
+  "Patrick","Thierry","Martine","Bob",
+  "1","2","3","4","5","6","Bertha","Maïté","9","10","11","12",
+];
+const fermRank = (name) => { const i = FERM_ORDER.indexOf(name); return i === -1 ? 999 : i; };
 const attenuation = (og, sg) => (!og || !sg || og <= 1) ? null : ((og - sg)/(og - 1))*100;
 const today = () => new Date().toISOString().slice(0,10);
 const fmtDate = (s) => { const d = new Date(s); return d.toLocaleDateString("fr-FR",{day:"2-digit",month:"2-digit",year:"2-digit"}); };
@@ -97,7 +120,15 @@ async function doLogin() {
     if (error) throw error;
     await loadProfile(data.user);
     await enterApp();
-  } catch (e) { $("#login-err").textContent = "Identifiant ou mot de passe incorrect"; }
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    let fr = "Échec de connexion : " + msg;
+    if (/not confirmed/i.test(msg))
+      fr = "E-mail non confirmé. Dans Supabase, confirmez le compte (ou recréez-le avec « Auto Confirm User » coché), puis réessayez.";
+    else if (/invalid login credentials/i.test(msg))
+      fr = "Identifiants incorrects : vérifiez l'adresse e-mail EXACTE du compte (domaine compris) et le mot de passe.";
+    $("#login-err").textContent = fr;
+  }
 }
 
 function doGuest() {
@@ -143,7 +174,11 @@ async function refreshData() {
     q(db.from("lots").select("*, fermenter:fermenters(name,volume_hl,site)")),
     q(db.from("settings").select("*")),
   ]);
-  S.fermenters = ferms;
+  S.fermenters = ferms.sort((a, b) => {
+    const ra = fermRank(a.name), rb = fermRank(b.name);
+    if (ra !== rb) return ra - rb;
+    return (a.site || "").localeCompare(b.site || "") || a.name.localeCompare(b.name);
+  });
   S.lots = lotsRaw.map(l => ({
     ...l,
     fermenter_name: l.fermenter?.name,
@@ -152,6 +187,8 @@ async function refreshData() {
   })).sort((a, b) => {
     const aa = a.status === "Active", ba = b.status === "Active";
     if (aa !== ba) return aa ? -1 : 1;
+    const ra = fermRank(a.fermenter_name), rb = fermRank(b.fermenter_name);
+    if (ra !== rb) return ra - rb;
     return (b.start_date || "").localeCompare(a.start_date || "");
   });
   S.settings = {}; setRows.forEach(r => S.settings[r.key] = r.value);
@@ -200,21 +237,20 @@ function viewSaisie(root) {
   formCard.appendChild(el("h3",{},"Nouveau relevé"));
   const r = el("div",{class:"row"});
   const fDate = inp("date", today());
-  const fDens = inp("text","", densUnit()==="P"?"12.5":"1.048");
+  const fDens = inp("text","","59");
   const platoHint = el("div",{class:"hint"});
   const fPh = inp("text","","4.2");
   const fTemp = inp("text","","20");
   const fPress = inp("text","","0.0");
   const fNote = inp("text","","optionnel");
   const fOp = inp("text","", S.me.display_name);
-  r.append(lab("Date", fDate), lab(`Densité (${densUnit()==="P"?"°P":"SG"})`, fDens, platoHint),
+  r.append(lab("Date", fDate), lab("Densité (ex. 59 = 1.059)", fDens, platoHint),
     lab("pH", fPh), lab("Température (°C)", fTemp), lab("Pression (bar)", fPress), lab("Saisi par", fOp));
   formCard.appendChild(r);
   formCard.appendChild(lab("Commentaire", fNote));
   fDens.addEventListener("input", ()=>{
-    const n = num(fDens.value);
-    const sg = n==null?null:(densUnit()==="P"?platoToSg(n):n);
-    platoHint.textContent = sg!=null?`≈ ${sgToPlato(sg).toFixed(1)} °P`:"";
+    const sg = parseDens(fDens.value);
+    platoHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:"";
   });
   const saveBtn = el("button",{class:"btn primary mt"},"Enregistrer le relevé");
   formCard.appendChild(saveBtn);
@@ -233,7 +269,7 @@ function viewSaisie(root) {
     lotInfo.append(
       el("span",{class:`badge ${l.phase==="Garde"?"garde":"ferm"}`}, l.phase),
       el("span",{class:"muted"}, `${l.fermenter_name} · ${l.volume_hl||"?"} hl · ${l.site||""}`));
-    if (l.og) lotInfo.append(el("span",{class:"muted"}, `· DI ${(+l.og).toFixed(3)} (${sgToPlato(+l.og).toFixed(1)}°P)`));
+    if (l.og) lotInfo.append(el("span",{class:"muted"}, `· DiM ${sgToAbbr(+l.og)} (${sgToPlato(+l.og).toFixed(1)}°P)`));
     try {
       const ms = await q(db.from("measurements").select("*").eq("lot_id", lotId).order("ts"));
       recentBody.innerHTML = "";
@@ -242,7 +278,7 @@ function viewSaisie(root) {
       t.innerHTML = `<thead><tr><th>Date</th><th>Densité</th><th>pH</th><th>T°</th><th>Bar</th><th>Par</th></tr></thead>`;
       const tb = el("tbody");
       ms.slice(-6).reverse().forEach(m=> tb.appendChild(el("tr",{},
-        `<td>${fmtDate(m.ts)}</td><td>${m.densite_sg!=null?(+m.densite_sg).toFixed(3):"—"}</td><td>${m.ph??"—"}</td><td>${m.temp??"—"}</td><td>${m.pressure??"—"}</td><td class="muted">${m.author||""}</td>`)));
+        `<td>${fmtDate(m.ts)}</td><td>${sgToAbbr(m.densite_sg)}</td><td>${m.ph??"—"}</td><td>${m.temp??"—"}</td><td>${m.pressure??"—"}</td><td class="muted">${m.author||""}</td>`)));
       t.appendChild(tb); recentBody.appendChild(t);
     } catch(e){ toast(e.message); }
   }
@@ -251,8 +287,7 @@ function viewSaisie(root) {
 
   saveBtn.addEventListener("click", async ()=>{
     const l = active.find(x=>x.id==lotId);
-    const dn = num(fDens.value);
-    const sg = dn==null?null:(densUnit()==="P"?platoToSg(dn):dn);
+    const sg = parseDens(fDens.value);
     if (sg==null && num(fPh.value)==null && num(fTemp.value)==null && num(fPress.value)==null) { toast("Renseignez au moins une valeur"); return; }
     try {
       await q(db.from("measurements").insert({
@@ -360,8 +395,8 @@ function viewCourbes(root) {
     const att = (og && last) ? attenuation(+og, +last.densite_sg) : null;
     stats.innerHTML = "";
     const add = (k,v)=> stats.appendChild(el("div",{class:"stat"},`<div class="k">${k}</div><div class="v">${v}</div>`));
-    add("Densité initiale", og?(+og).toFixed(3):"—");
-    add("Densité actuelle", last?(+last.densite_sg).toFixed(3):"—");
+    add("DiM", og?sgToAbbr(+og):"—");
+    add("Densité actuelle", last?sgToAbbr(+last.densite_sg):"—");
     add("Atténuation app.", att!=null?att.toFixed(0)+" %":"—");
     add("Relevés", meas.length);
     add("Phase", lot.phase);
@@ -386,12 +421,15 @@ function viewCourbes(root) {
         interaction:{mode:"nearest",intersect:false},
         scales:{
           x:{ type:"linear", ticks:{ callback:(v)=>fmtDate(new Date(v).toISOString()), maxRotation:0, font:{size:11} } },
-          d:{ position:"left", ticks:{ callback:(v)=>v.toFixed(3), font:{size:11} }, title:{display:true,text:"Densité (SG)",font:{size:11}} },
+          d:{ position:"left", ticks:{ callback:(v)=>sgToAbbr(v), font:{size:11} }, title:{display:true,text:"Densité (abr.)",font:{size:11}} },
           s:{ position:"right", grid:{drawOnChartArea:false}, ticks:{font:{size:11}}, title:{display:true,text:secLabel,font:{size:11}} },
         },
         plugins:{
           legend:{labels:{font:{size:12}}},
-          tooltip:{ callbacks:{ title:(items)=> items.length?fmtDT(new Date(items[0].parsed.x).toISOString()):"" } },
+          tooltip:{ callbacks:{
+            title:(items)=> items.length?fmtDT(new Date(items[0].parsed.x).toISOString()):"",
+            label:(it)=> it.dataset.label==="Densité" ? `Densité : ${sgToAbbr(it.parsed.y)}` : `${it.dataset.label} : ${it.parsed.y}`,
+          } },
         },
       },
       plugins:[ addMarkersPlugin(markers) ],
@@ -405,7 +443,7 @@ function viewCourbes(root) {
     t.innerHTML = `<thead><tr><th>Date</th><th>Phase</th><th>Densité</th><th>°P</th><th>pH</th><th>T°</th><th>Bar</th><th>Par</th><th>Note</th>${isSup()?"<th></th>":""}</tr></thead>`;
     const tb = el("tbody");
     [...meas].reverse().forEach(m=>{
-      const tr = el("tr",{},`<td>${fmtDT(m.ts)}</td><td>${m.phase||""}</td><td>${m.densite_sg!=null?(+m.densite_sg).toFixed(3):"—"}</td><td>${m.densite_sg!=null?sgToPlato(+m.densite_sg).toFixed(1):"—"}</td><td>${m.ph??"—"}</td><td>${m.temp??"—"}</td><td>${m.pressure??"—"}</td><td class="muted">${m.author||""}</td><td class="muted">${m.note||""}</td>`);
+      const tr = el("tr",{},`<td>${fmtDT(m.ts)}</td><td>${m.phase||""}</td><td>${sgToAbbr(m.densite_sg)}</td><td>${m.densite_sg!=null?sgToPlato(+m.densite_sg).toFixed(1):"—"}</td><td>${m.ph??"—"}</td><td>${m.temp??"—"}</td><td>${m.pressure??"—"}</td><td class="muted">${m.author||""}</td><td class="muted">${m.note||""}</td>`);
       if (isSup()) {
         const td = el("td"); const b = el("button",{class:"btn danger sm"},"suppr.");
         b.addEventListener("click", async ()=>{ if(confirm("Supprimer ce relevé ?")){ try{ await q(db.from("measurements").delete().eq("id", m.id)); toast("Supprimé"); load(); }catch(e){toast(e.message);} }});
@@ -418,8 +456,8 @@ function viewCourbes(root) {
   }
 
   function exportCSV() {
-    const rows = [["Date/heure","Phase","Densite_SG","Plato","pH","Temp_C","Pression_bar","Saisi_par","Compte","Commentaire"]];
-    meas.forEach(m=>rows.push([fmtDT(m.ts), m.phase||"", m.densite_sg??"", m.densite_sg!=null?sgToPlato(+m.densite_sg).toFixed(2):"",
+    const rows = [["Date/heure","Phase","Densite_abr","Densite_SG","Plato","pH","Temp_C","Pression_bar","Saisi_par","Compte","Commentaire"]];
+    meas.forEach(m=>rows.push([fmtDT(m.ts), m.phase||"", m.densite_sg!=null?sgToAbbr(+m.densite_sg):"", m.densite_sg??"", m.densite_sg!=null?sgToPlato(+m.densite_sg).toFixed(2):"",
       m.ph??"", m.temp??"", m.pressure??"", m.operator||"", m.author||"", (m.note||"").replace(/[;\n]/g," ")]));
     rows.push([]); rows.push(["AJOUTS"]); rows.push(["Date","Type","Designation","Quantite","Unite","Note"]);
     adds.forEach(a=>rows.push([fmtDate(a.ts), a.type, a.label, a.qty??"", a.unit||"", (a.note||"").replace(/[;\n]/g," ")]));
@@ -467,22 +505,23 @@ function viewLots(root) {
     const fSel = el("select");
     S.fermenters.forEach(f=>{ const o = el("option",{value:f.id}, `${f.name}${occupied.has(f.id)?" (occupé)":""}`); if(occupied.has(f.id)) o.disabled=true; fSel.appendChild(o); });
     const cBeer = inp("text","","Nom / recette");
-    const cBatch = inp("text","","optionnel");
-    const cOg = inp("text","","1.052");
+    const cOg = inp("text","","59");
     const ogHint = el("div",{class:"hint"});
     const cDate = inp("date", today());
     const r = el("div",{class:"row"});
-    r.append(lab("Fermenteur",fSel), lab("Bière",cBeer), lab("N° brassin",cBatch),
-             lab("Densité initiale (SG)", cOg, ogHint), lab("Date de départ", cDate));
+    r.append(lab("Fermenteur",fSel), lab("Bière",cBeer),
+             lab("DiM — densité initiale (ex. 59)", cOg, ogHint), lab("Date de départ", cDate));
     create.appendChild(r);
-    cOg.addEventListener("input",()=>{ const n=num(cOg.value); ogHint.textContent = n?`${sgToPlato(n).toFixed(1)} °P`:""; });
+    cOg.addEventListener("input",()=>{ const sg=parseDens(cOg.value); ogHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:""; });
     const cBtn = el("button",{class:"btn primary mt"},"Créer le lot");
     create.appendChild(cBtn); left.appendChild(create);
     cBtn.addEventListener("click", async ()=>{
       if(!cBeer.value.trim()){ toast("Nom de la bière requis"); return; }
+      const og = parseDens(cOg.value);
+      if(og==null){ toast("La densité initiale (DiM) est obligatoire"); return; }
       try{
         await q(db.from("lots").insert({ fermenter_id:Number(fSel.value), beer_name:cBeer.value.trim(),
-          batch_no:cBatch.value.trim()||null, og:num(cOg.value), start_date:cDate.value }));
+          og:og, start_date:cDate.value }));
         toast("Lot créé ✓"); await refreshData(); go("lots");
       }catch(e){ toast(e.message); }
     });
@@ -494,14 +533,19 @@ function viewLots(root) {
   if(!active.length) ac.appendChild(el("p",{class:"muted"},"Aucun lot actif."));
   active.forEach(l=>{
     const item = el("div",{class:"lot-item"});
-    item.appendChild(el("div",{style:"flex:1"},`<div class="title">${l.fermenter_name} — ${l.beer_name} ${l.batch_no?`<span class="muted">(${l.batch_no})</span>`:""}</div><div class="sub">Départ ${l.start_date?fmtDate(l.start_date):"?"} ${l.og?`· DI ${(+l.og).toFixed(3)}`:""}</div>`));
+    item.appendChild(el("div",{style:"flex:1"},`<div class="title">${l.fermenter_name} — ${l.beer_name}</div><div class="sub">Départ ${l.start_date?fmtDate(l.start_date):"?"} ${l.og?`· DiM ${sgToAbbr(+l.og)}`:""}</div>`));
     item.appendChild(el("span",{class:`badge ${l.phase==="Garde"?"garde":"ferm"}`}, l.phase));
     if (canWrite()) {
-      const toggle = el("button",{class:"btn ghost sm"}, l.phase==="Fermentation"?"→ Garde":"→ Fermentation");
-      toggle.addEventListener("click", async ()=>{ try{ await q(db.from("lots").update({phase:l.phase==="Fermentation"?"Garde":"Fermentation"}).eq("id",l.id)); toast("Phase mise à jour"); await refreshData(); go("lots"); }catch(e){toast(e.message);} });
+      // Fermentation -> Garde : tout opérateur. Garde -> Fermentation (retour) : superviseur seulement.
+      const canRevert = isSup();
+      if (l.phase === "Fermentation" || canRevert) {
+        const toggle = el("button",{class:"btn ghost sm"}, l.phase==="Fermentation"?"→ Garde":"→ Fermentation");
+        toggle.addEventListener("click", async ()=>{ try{ await q(db.from("lots").update({phase:l.phase==="Fermentation"?"Garde":"Fermentation"}).eq("id",l.id)); toast("Phase mise à jour"); await refreshData(); go("lots"); }catch(e){toast(e.message);} });
+        item.append(toggle);
+      }
       const close = el("button",{class:"btn ghost sm"},"Clôturer");
       close.addEventListener("click", async ()=>{ if(confirm("Clôturer ce lot ?")){ try{ await q(db.from("lots").update({status:"Terminé", end_date:today()}).eq("id",l.id)); toast("Lot clôturé"); await refreshData(); go("lots"); }catch(e){toast(e.message);} }});
-      item.append(toggle, close);
+      item.append(close);
     }
     ac.appendChild(item);
   });
@@ -548,14 +592,9 @@ function viewLots(root) {
 /* ============================ ADMIN ============================ */
 function viewAdmin(root) {
   const set = el("div",{class:"card",style:"max-width:460px"});
-  set.appendChild(el("h3",{},"Réglages"));
-  const unit = sels([["SG","Densité (SG, ex. 1.048)"],["P","Degré Plato (°P)"]], S.settings.density_unit);
-  set.appendChild(lab("Unité de densité (saisie)", unit));
-  set.appendChild(el("p",{class:"hint"},"Toujours convertie en SG pour le stockage et les courbes."));
-  const sBtn = el("button",{class:"btn primary mt"},"Enregistrer");
-  sBtn.addEventListener("click", async ()=>{ try{ await q(db.from("settings").update({value:unit.value}).eq("key","density_unit")); S.settings.density_unit=unit.value; toast("Réglages enregistrés"); }catch(e){toast(e.message);} });
-  set.appendChild(sBtn);
-  set.appendChild(el("p",{class:"hint",style:"margin-top:14px"},"La gestion des comptes et des rôles se fait dans le tableau de bord Supabase (Authentication → Users), pour des raisons de sécurité."));
+  set.appendChild(el("h3",{},"Administration"));
+  set.appendChild(el("p",{class:"hint"},"Les densités sont saisies et affichées en abrégé (ex. 59 = 1.059), et stockées en SG."));
+  set.appendChild(el("p",{class:"hint",style:"margin-top:10px"},"La gestion des comptes et des rôles se fait dans le tableau de bord Supabase (Authentication → Users), pour des raisons de sécurité."));
   root.appendChild(set);
 }
 
