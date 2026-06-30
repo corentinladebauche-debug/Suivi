@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Suivi de fermentation — La Débauche</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <!-- Écran de connexion -->
+  <div id="login" class="login-wrap hidden">
+    <div class="login-card">
+      <div class="brand"><span class="logo">🍺</span><div><h1>Suivi de fermentation</h1><p>La Débauche</p></div></div>
+      <label>Identifiant (prénom)<input id="login-user" autocomplete="username" /></label>
+      <label>Mot de passe<input id="login-pass" type="password" autocomplete="current-password" /></label>
+      <button id="login-btn" class="btn primary">Se connecter</button>
+      <p id="login-err" class="err"></p>
+      <div class="guest-sep"><span>ou</span></div>
+      <button id="guest-btn" class="btn ghost">Consulter (lecture seule)</button>
+    </div>
+  </div>
+
+  <!-- Application -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand small"><span class="logo">🍺</span><div><strong>Suivi de fermentation</strong><span class="muted"> · La Débauche</span></div></div>
+      <nav id="tabs" class="tabs"></nav>
+      <div id="user-box" class="user-box"></div>
+    </header>
+    <main id="view" class="view"></main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>
