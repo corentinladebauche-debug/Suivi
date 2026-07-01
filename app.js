@@ -411,7 +411,12 @@ function viewCourbes(root) {
   const addsBody = el("div",{class:"scroll"}); addsCard.appendChild(addsBody);
   root.appendChild(addsCard);
 
-  let meas = [], adds = [], lot = null;
+  const transCard = el("div",{class:"card mt"});
+  transCard.appendChild(el("h3",{},"Transferts"));
+  const transBody = el("div",{class:"scroll"}); transCard.appendChild(transBody);
+  root.appendChild(transCard);
+
+  let meas = [], adds = [], transfers = [], lot = null;
 
   async function load() {
     lot = S.lots.find(l=>l.id==sel.value);
@@ -421,7 +426,9 @@ function viewCourbes(root) {
         q(db.from("additions").select("*").eq("lot_id", lot.id).order("ts")),
       ]);
     } catch(e){ toast(e.message); meas=[]; adds=[]; }
-    renderStats(); draw(); renderHist(); renderAdds();
+    try { transfers = await q(db.from("transfers").select("*").eq("lot_id", lot.id).order("ts")); }
+    catch(_){ transfers = []; }
+    renderStats(); draw(); renderHist(); renderAdds(); renderTransfers();
   }
 
   function renderAdds() {
@@ -435,6 +442,18 @@ function viewCourbes(root) {
     t.appendChild(tb); addsBody.appendChild(t);
   }
 
+  function renderTransfers() {
+    transBody.innerHTML = "";
+    if (!transfers.length) { transBody.appendChild(el("p",{class:"muted"},"Aucun transfert.")); return; }
+    const nm = (id)=> (S.fermenters.find(f=>f.id==id)||{}).name || "?";
+    const t = el("table");
+    t.innerHTML = `<thead><tr><th>Date & heure</th><th>De</th><th>Vers</th><th>Équipement</th><th>Volume</th><th>Par</th></tr></thead>`;
+    const tb = el("tbody");
+    [...transfers].reverse().forEach(x=> tb.appendChild(el("tr",{},
+      `<td>${fmtDT(x.ts)}</td><td>${nm(x.from_fermenter_id)}</td><td>${nm(x.to_fermenter_id)}</td><td>${x.equipment||"—"}</td><td>${x.volume_hl!=null?`${x.volume_hl} hl`:"—"}</td><td class="muted">${x.author||""}</td>`)));
+    t.appendChild(tb); transBody.appendChild(t);
+  }
+
   function renderStats() {
     const withD = meas.filter(m=>m.densite_sg!=null);
     const last = withD[withD.length-1];
@@ -443,6 +462,7 @@ function viewCourbes(root) {
     stats.innerHTML = "";
     const add = (k,v)=> stats.appendChild(el("div",{class:"stat"},`<div class="k">${k}</div><div class="v">${v}</div>`));
     add("DiM", og?sgToAbbr(+og):"—");
+    add("Volume courant", lot.volume_hl!=null?`${lot.volume_hl} hl`:"—");
     add("Densité actuelle", last?sgToAbbr(+last.densite_sg):"—");
     add("Atténuation app.", att!=null?att.toFixed(0)+" %":"—");
     add("Relevés", meas.length);
@@ -460,7 +480,9 @@ function viewCourbes(root) {
     const sec = meas.filter(m=>m[secondary]!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m[secondary]}));
     const secLabel = {temp:"Température (°C)",ph:"pH",pressure:"Pression (bar)"}[secondary];
     const secColor = {temp:"#0e7490",ph:"#7c3aed",pressure:"#475569"}[secondary];
-    const markers = adds.map(a=>({x:new Date(a.ts).getTime(), label:a.label}));
+    const markers = adds.map(a=>({x:new Date(a.ts).getTime(), label:a.label}))
+      .concat(transfers.map(t=>({ x:new Date(t.ts).getTime(),
+        label:`→ ${(S.fermenters.find(f=>f.id==t.to_fermenter_id)||{}).name||"?"}`, color:"#9333ea" })));
 
     // Axe densité : 0 -> 60 (abr.). Monte jusqu'à la DiM si DiM > 60. S'étend si une mesure sort.
     const ogSg = lot.og ? +lot.og : null;
@@ -585,9 +607,10 @@ function addMarkersPlugin(markers) {
       markers.forEach(m=>{
         const px = xs.getPixelForValue(m.x);
         if (px < chartArea.left || px > chartArea.right) return;
-        ctx.strokeStyle = "#16a34a"; ctx.lineWidth = 1; ctx.setLineDash([4,3]);
+        const col = m.color || "#16a34a";
+        ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([4,3]);
         ctx.beginPath(); ctx.moveTo(px, chartArea.top); ctx.lineTo(px, chartArea.bottom); ctx.stroke();
-        ctx.setLineDash([]); ctx.fillStyle = "#16a34a"; ctx.font = "10px system-ui";
+        ctx.setLineDash([]); ctx.fillStyle = col; ctx.font = "10px system-ui";
         ctx.save(); ctx.translate(px+3, chartArea.top+4); ctx.fillText(m.label, 0, 0); ctx.restore();
       });
       ctx.restore();
@@ -612,12 +635,13 @@ function editLot(lot){
   const beerSel = beerSelector(lot.beer_name || "");
   const cOg = inp("text", lot.og!=null ? sgToAbbr(+lot.og) : "", "59");
   const ogHint = el("div",{class:"hint"});
+  const cVol = inp("text", lot.volume_hl!=null ? String(lot.volume_hl) : "", "hl");
   const cDate = inp("date", lot.start_date || today());
   const phase = sels([["Fermentation","Fermentation"],["15°C","15°C"],["Garde","Garde"]], lot.phase);
 
   const r = el("div",{class:"row"});
   r.append(lab("Fermenteur", fSel), lab("Bière", beerSel.control),
-           lab("DiM (ex. 59)", cOg, ogHint), lab("Date de départ", cDate), lab("Phase", phase));
+           lab("DiM (ex. 59)", cOg, ogHint), lab("Volume (hl)", cVol), lab("Date de départ", cDate), lab("Phase", phase));
   card.appendChild(r); card.appendChild(beerSel.chkLine);
   cOg.addEventListener("input",()=>{ const sg=parseDens(cOg.value); ogHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:""; });
 
@@ -633,9 +657,64 @@ function editLot(lot){
     if (og==null){ toast("La DiM est obligatoire"); return; }
     try{
       await q(db.from("lots").update({
-        fermenter_id: Number(fSel.value), beer_name: beerName, og: og,
+        fermenter_id: Number(fSel.value), beer_name: beerName, og: og, volume_hl: num(cVol.value),
         start_date: cDate.value, phase: phase.value }).eq("id", lot.id));
       toast("Lot mis à jour ✓"); await refreshData(); go("lots");
+    }catch(e){ toast(e.message); }
+  });
+}
+
+/* ============================ TRANSFERT ENTRE FERMENTEURS ============================ */
+function transferLot(lot){
+  const v = $("#view"); v.innerHTML = "";
+  const card = el("div",{class:"card",style:"max-width:560px"});
+  card.appendChild(el("h3",{}, `Transfert — ${lot.fermenter_name} · ${lot.beer_name}`));
+  card.appendChild(el("p",{class:"hint"}, "La bière — avec ses courbes et relevés — passe dans le fermenteur d'arrivée ; le fermenteur de départ est libéré."));
+
+  const occupied = new Set(S.lots.filter(l=>l.status==="Active").map(l=>l.fermenter_id));
+  const dest = el("select");
+  dest.appendChild(el("option",{value:""},"— choisir —"));
+  S.fermenters.forEach(f=>{
+    if (f.id === lot.fermenter_id) return;   // pas la cuve de départ
+    if (occupied.has(f.id)) return;          // seulement des cuves libres
+    dest.appendChild(el("option",{value:f.id}, `${f.name}${f.volume_hl?` (${f.volume_hl} hl)`:""}`));
+  });
+
+  const EQUIP = ["Centrifugeuse","Filtre double cartouche","Aucun"];
+  const eqWrap = el("div",{class:"stack",style:"gap:6px;margin-top:4px"});
+  EQUIP.forEach(e=>{
+    const l = el("label",{style:"display:flex;align-items:center;gap:6px;font-size:14px;font-weight:400"});
+    const rb = el("input"); rb.type = "radio"; rb.name = "equip"; rb.value = e;
+    l.append(rb, document.createTextNode(e)); eqWrap.appendChild(l);
+  });
+  const vol = inp("text","","hl");
+  const dateT = inp("date", today());
+
+  card.appendChild(lab("Fermenteur d'arrivée", dest));
+  card.appendChild(el("div",{style:"margin-top:10px;font-size:13px;color:var(--sub);font-weight:600"},"Équipement (obligatoire, un seul choix)"));
+  card.appendChild(eqWrap);
+  const row = el("div",{class:"row mt"}); row.style.gridTemplateColumns = "1fr 1fr";
+  row.append(lab("Volume transféré (hl)", vol), lab("Date", dateT));
+  card.appendChild(row);
+
+  const ok = el("button",{class:"btn primary mt"},"Valider le transfert");
+  const cancel = el("button",{class:"btn ghost mt",style:"margin-left:8px"},"Annuler");
+  card.append(ok, cancel); v.appendChild(card);
+
+  cancel.addEventListener("click", ()=> go("lots"));
+  ok.addEventListener("click", async ()=>{
+    const toId = Number(dest.value);
+    if (!toId){ toast("Choisissez le fermenteur d'arrivée"); return; }
+    const checked = eqWrap.querySelector("input[name=equip]:checked");
+    if (!checked){ toast("Choisissez l'équipement (ou « Aucun »)"); return; }
+    const vhl = num(vol.value);
+    if (vhl==null){ toast("Le volume transféré est obligatoire"); return; }
+    try{
+      await q(db.from("transfers").insert({ lot_id:lot.id, from_fermenter_id:lot.fermenter_id,
+        to_fermenter_id:toId, equipment:checked.value, volume_hl:vhl,
+        ts:(dateT.value||today())+"T12:00:00Z", date:dateT.value }));
+      await q(db.from("lots").update({ fermenter_id: toId, volume_hl: vhl }).eq("id", lot.id));
+      toast("Transfert effectué ✓"); await refreshData(); go("lots");
     }catch(e){ toast(e.message); }
   });
 }
@@ -655,12 +734,13 @@ function viewLots(root) {
     const beerSel = beerSelector("");
     const cOg = inp("text","","59");
     const ogHint = el("div",{class:"hint"});
+    const cVol = inp("text","","hl");
     const cDate = inp("date", today());
     const cEnd = inp("date","");
     const endLab = lab("Date de fin", cEnd); endLab.classList.add("hidden");
     const r = el("div",{class:"row"});
     r.append(lab("Fermenteur",fSel), lab("Bière (gamme permanente)", beerSel.control),
-             lab("DiM — densité initiale (ex. 59)", cOg, ogHint), lab("Date de départ", cDate), endLab);
+             lab("DiM — densité initiale (ex. 59)", cOg, ogHint), lab("Volume (hl)", cVol), lab("Date de départ", cDate), endLab);
     create.appendChild(r);
     create.appendChild(beerSel.chkLine);
     let cHist = null;
@@ -682,9 +762,11 @@ function viewLots(root) {
       if(!beerName){ toast("Choisissez ou saisissez une bière"); return; }
       const og = parseDens(cOg.value);
       if(og==null){ toast("La densité initiale (DiM) est obligatoire"); return; }
+      const vol = num(cVol.value);
+      if(vol==null){ toast("Le volume (hl) est obligatoire"); return; }
       const hist = !!(cHist && cHist.checked);
       if (hist && !cEnd.value){ toast("Date de fin requise pour un lot historique"); return; }
-      const payload = { fermenter_id:Number(fSel.value), beer_name:beerName, og:og, start_date:cDate.value };
+      const payload = { fermenter_id:Number(fSel.value), beer_name:beerName, og:og, volume_hl:vol, start_date:cDate.value };
       if (hist){ payload.status = "Terminé"; payload.end_date = cEnd.value; payload.phase = "Garde"; }
       try{
         await q(db.from("lots").insert(payload));
@@ -711,7 +793,7 @@ function viewLots(root) {
   if(!active.length) ac.appendChild(el("p",{class:"muted"},"Aucun lot actif."));
   active.forEach(l=>{
     const item = el("div",{class:"lot-item"});
-    item.appendChild(el("div",{style:"flex:1"},`<div class="title">${l.fermenter_name} — ${l.beer_name}</div><div class="sub">Départ ${l.start_date?fmtDate(l.start_date):"?"} ${l.og?`· DiM ${sgToAbbr(+l.og)}`:""}</div>`));
+    item.appendChild(el("div",{style:"flex:1"},`<div class="title">${l.fermenter_name} — ${l.beer_name}</div><div class="sub">Départ ${l.start_date?fmtDate(l.start_date):"?"} ${l.volume_hl!=null?`· ${l.volume_hl} hl`:""} ${l.og?`· DiM ${sgToAbbr(+l.og)}`:""}</div>`));
     item.appendChild(el("span",{class:`badge ${phaseClass(l.phase)}`}, l.phase));
     if (canWrite()) {
       // Avancer d'une phase : tout opérateur. Reculer vers une phase antérieure : superviseur seulement.
@@ -724,6 +806,9 @@ function viewLots(root) {
         b.addEventListener("click", async ()=>{ try{ await q(db.from("lots").update({phase:target}).eq("id",l.id)); toast("Phase mise à jour"); await refreshData(); go("lots"); }catch(e){toast(e.message);} });
         item.append(b);
       });
+      const tr = el("button",{class:"btn ghost sm"},"Transfert");
+      tr.addEventListener("click", ()=> transferLot(l));
+      item.append(tr);
       const close = el("button",{class:"btn ghost sm"},"Clôturer");
       close.addEventListener("click", async ()=>{ if(confirm("Clôturer ce lot ?")){ try{ await q(db.from("lots").update({status:"Terminé", end_date:today()}).eq("id",l.id)); toast("Lot clôturé"); await refreshData(); go("lots"); }catch(e){toast(e.message);} }});
       item.append(close);
