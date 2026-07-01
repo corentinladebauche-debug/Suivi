@@ -59,6 +59,7 @@ label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;
 .badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:#f5f5f4;color:#57534e}
 .badge.ferm{background:var(--amber-bg);color:var(--amber-dk)}
 .badge.garde{background:#e0f2fe;color:#075985}
+.badge.palier{background:#dcfce7;color:#166534}
 .stats{display:flex;gap:22px;flex-wrap:wrap;margin-top:12px}
 .stat .k{font-size:12px;color:var(--sub)}
 .stat .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
