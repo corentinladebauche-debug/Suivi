@@ -8,6 +8,7 @@ body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;b
 .hidden{display:none!important}
 .muted{color:var(--sub)}
 .err{color:var(--red);font-size:13px;min-height:18px;margin:6px 0 0}
+.ok{color:#15803d;font-size:13px;margin:6px 0 0;font-weight:600}
 button{font-family:inherit;cursor:pointer}
 input,select{font-family:inherit;font-size:14px;width:100%;padding:9px 10px;border:1px solid #d6d3d1;border-radius:7px;background:#fff}
 input:focus,select:focus{outline:none;border-color:var(--amber);box-shadow:0 0 0 2px #fde68a}
