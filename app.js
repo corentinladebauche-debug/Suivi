@@ -75,6 +75,28 @@ const densUnit = () => S.settings.density_unit === "P" ? "P" : "SG";
 const ADD_TYPES = ["Dry hop","Fruits","Sucre","Levure","Acide / correction","Autre"];
 const UNITS = ["g/hl","kg/hl","kg","g","L","g/L"];
 
+// Gamme permanente : recettes proposees par defaut a la creation d'un lot.
+// Editez simplement cette liste pour la mettre a jour.
+const RECIPES = ["Alma","Big Boy","Cat Soup","Cindy Bunny","Cute and Sober","Demi mondaine",
+  "Double Belge","Hazy Diamond","IPA","IPA Salem","Lager","M'. Joe","NEIPA","Nevermore",
+  "Nina Bianca","Pilsner","Pilsner Salem","Red Tears"];
+
+// Sélecteur de bière : liste déroulante (gamme permanente) + case « éphémère » -> saisie libre.
+function beerSelector(current){
+  const control = el("div");
+  const rec = sels(RECIPES.map(r=>[r,r]), RECIPES.includes(current) ? current : RECIPES[0]);
+  const free = inp("text","","Nom de la bière éphémère");
+  control.append(rec, free);
+  const chkLine = el("label",{style:"display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;font-weight:500"});
+  const chk = el("input"); chk.type = "checkbox";
+  chkLine.append(chk, document.createTextNode("Nouvelle bière (gamme éphémère)"));
+  const isEph = !!current && !RECIPES.includes(current);
+  if (isEph){ chk.checked = true; free.value = current; }
+  const sync = ()=>{ rec.classList.toggle("hidden", chk.checked); free.classList.toggle("hidden", !chk.checked); };
+  chk.addEventListener("change", sync); sync();
+  return { control, chkLine, get: ()=> chk.checked ? free.value.trim() : rec.value };
+}
+
 /* ============================ Démarrage ============================ */
 init();
 async function init() {
@@ -551,6 +573,51 @@ function addMarkersPlugin(markers) {
   };
 }
 
+/* ============================ ÉDITION D'UN LOT (superviseur) ============================ */
+function editLot(lot){
+  const v = $("#view"); v.innerHTML = "";
+  const card = el("div",{class:"card",style:"max-width:660px"});
+  card.appendChild(el("h3",{}, `Éditer le lot — ${lot.fermenter_name} · ${lot.beer_name}`));
+
+  const occupied = new Set(S.lots.filter(l=>l.status==="Active" && l.id!==lot.id).map(l=>l.fermenter_id));
+  const fSel = el("select");
+  S.fermenters.forEach(f=>{
+    const o = el("option",{value:f.id}, `${f.name}${occupied.has(f.id)?" (occupé)":""}`);
+    if (occupied.has(f.id)) o.disabled = true;
+    if (f.id === lot.fermenter_id) o.selected = true;
+    fSel.appendChild(o);
+  });
+  const beerSel = beerSelector(lot.beer_name || "");
+  const cOg = inp("text", lot.og!=null ? sgToAbbr(+lot.og) : "", "59");
+  const ogHint = el("div",{class:"hint"});
+  const cDate = inp("date", lot.start_date || today());
+  const phase = sels([["Fermentation","Fermentation"],["Garde","Garde"]], lot.phase);
+
+  const r = el("div",{class:"row"});
+  r.append(lab("Fermenteur", fSel), lab("Bière", beerSel.control),
+           lab("DiM (ex. 59)", cOg, ogHint), lab("Date de départ", cDate), lab("Phase", phase));
+  card.appendChild(r); card.appendChild(beerSel.chkLine);
+  cOg.addEventListener("input",()=>{ const sg=parseDens(cOg.value); ogHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:""; });
+
+  const save = el("button",{class:"btn primary mt"},"Enregistrer les modifications");
+  const cancel = el("button",{class:"btn ghost mt",style:"margin-left:8px"},"Annuler");
+  card.append(save, cancel); v.appendChild(card);
+
+  cancel.addEventListener("click", ()=> go("lots"));
+  save.addEventListener("click", async ()=>{
+    const beerName = beerSel.get();
+    if (!beerName){ toast("Choisissez ou saisissez une bière"); return; }
+    const og = parseDens(cOg.value);
+    if (og==null){ toast("La DiM est obligatoire"); return; }
+    try{
+      await q(db.from("lots").update({
+        fermenter_id: Number(fSel.value), beer_name: beerName, og: og,
+        start_date: cDate.value, phase: phase.value }).eq("id", lot.id));
+      toast("Lot mis à jour ✓"); await refreshData(); go("lots");
+    }catch(e){ toast(e.message); }
+  });
+}
+
 /* ============================ CUVES & LOTS ============================ */
 function viewLots(root) {
   const grid = el("div",{class:"grid cols-2"});
@@ -563,23 +630,25 @@ function viewLots(root) {
     create.appendChild(el("h3",{},"Nouveau lot (bière dans un fermenteur)"));
     const fSel = el("select");
     S.fermenters.forEach(f=>{ const o = el("option",{value:f.id}, `${f.name}${occupied.has(f.id)?" (occupé)":""}`); if(occupied.has(f.id)) o.disabled=true; fSel.appendChild(o); });
-    const cBeer = inp("text","","Nom / recette");
+    const beerSel = beerSelector("");
     const cOg = inp("text","","59");
     const ogHint = el("div",{class:"hint"});
     const cDate = inp("date", today());
     const r = el("div",{class:"row"});
-    r.append(lab("Fermenteur",fSel), lab("Bière",cBeer),
+    r.append(lab("Fermenteur",fSel), lab("Bière (gamme permanente)", beerSel.control),
              lab("DiM — densité initiale (ex. 59)", cOg, ogHint), lab("Date de départ", cDate));
     create.appendChild(r);
+    create.appendChild(beerSel.chkLine);
     cOg.addEventListener("input",()=>{ const sg=parseDens(cOg.value); ogHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:""; });
     const cBtn = el("button",{class:"btn primary mt"},"Créer le lot");
     create.appendChild(cBtn); left.appendChild(create);
     cBtn.addEventListener("click", async ()=>{
-      if(!cBeer.value.trim()){ toast("Nom de la bière requis"); return; }
+      const beerName = beerSel.get();
+      if(!beerName){ toast("Choisissez ou saisissez une bière"); return; }
       const og = parseDens(cOg.value);
       if(og==null){ toast("La densité initiale (DiM) est obligatoire"); return; }
       try{
-        await q(db.from("lots").insert({ fermenter_id:Number(fSel.value), beer_name:cBeer.value.trim(),
+        await q(db.from("lots").insert({ fermenter_id:Number(fSel.value), beer_name:beerName,
           og:og, start_date:cDate.value }));
         toast("Lot créé ✓"); await refreshData(); go("lots");
       }catch(e){ toast(e.message); }
@@ -605,6 +674,7 @@ function viewLots(root) {
       const close = el("button",{class:"btn ghost sm"},"Clôturer");
       close.addEventListener("click", async ()=>{ if(confirm("Clôturer ce lot ?")){ try{ await q(db.from("lots").update({status:"Terminé", end_date:today()}).eq("id",l.id)); toast("Lot clôturé"); await refreshData(); go("lots"); }catch(e){toast(e.message);} }});
       item.append(close);
+      if (isSup()) { const edit = el("button",{class:"btn ghost sm"},"Éditer"); edit.addEventListener("click", ()=> editLot(l)); item.append(edit); }
     }
     ac.appendChild(item);
   });
@@ -618,7 +688,7 @@ function viewLots(root) {
       const row = el("div",{class:"flexb",style:"border-top:1px solid #f0efed;padding:7px 0;font-size:13px"});
       row.appendChild(el("span",{},`${l.fermenter_name} — ${l.beer_name} <span class="muted">· ${l.start_date?fmtDate(l.start_date):""} → ${l.end_date?fmtDate(l.end_date):""}</span>`));
       row.appendChild(el("span",{class:"spacer"}));
-      if (isSup()) { const b=el("button",{class:"btn ghost sm"},"Réactiver"); b.addEventListener("click",async()=>{ try{ await q(db.from("lots").update({status:"Active",end_date:null}).eq("id",l.id)); await refreshData(); go("lots"); }catch(e){toast(e.message);} }); row.appendChild(b); }
+      if (isSup()) { const e=el("button",{class:"btn ghost sm"},"Éditer"); e.addEventListener("click",()=> editLot(l)); row.appendChild(e); const b=el("button",{class:"btn ghost sm"},"Réactiver"); b.addEventListener("click",async()=>{ try{ await q(db.from("lots").update({status:"Active",end_date:null}).eq("id",l.id)); await refreshData(); go("lots"); }catch(e){toast(e.message);} }); row.appendChild(b); }
       dc.appendChild(row);
     });
     left.appendChild(dc);
