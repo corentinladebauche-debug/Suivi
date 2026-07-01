@@ -198,6 +198,7 @@ function buildTabs() {
   const tabs = [];
   if (canWrite()) tabs.push(["saisie","Saisie"]);
   tabs.push(["courbes","Courbes"], ["lots","Cuves & lots"]);
+  if (canWrite()) tabs.push(["import","Import"]);
   if (isSup()) tabs.push(["admin","Admin"]);
   const nav = $("#tabs"); nav.innerHTML = "";
   tabs.forEach(([id,label]) => nav.appendChild(
@@ -206,12 +207,14 @@ function buildTabs() {
 
 function go(tab) {
   if (tab === "saisie" && !canWrite()) tab = "courbes";
+  if (tab === "import" && !canWrite()) tab = "courbes";
   if (tab === "admin" && !isSup()) tab = "courbes";
   S.tab = tab; buildTabs();
   const v = $("#view"); v.innerHTML = "";
   if (tab==="saisie") viewSaisie(v);
   else if (tab==="courbes") viewCourbes(v);
   else if (tab==="lots") viewLots(v);
+  else if (tab==="import") viewImport(v);
   else if (tab==="admin") viewAdmin(v);
 }
 
@@ -409,6 +412,32 @@ function viewCourbes(root) {
     const secColor = {temp:"#0e7490",ph:"#7c3aed",pressure:"#475569"}[secondary];
     const markers = adds.map(a=>({x:new Date(a.ts).getTime(), label:a.label}));
 
+    // Axe densité : 0 -> 60 (abr.). Monte jusqu'à la DiM si DiM > 60. S'étend si une mesure sort.
+    const ogSg = lot.og ? +lot.og : null;
+    let dMax = (ogSg && (ogSg - 1) * 1000 > 60) ? ogSg : 1.060;
+    let dMin = 1.000;
+    const dv = dens.map(p=>p.y);
+    if (dv.length) { dMax = Math.max(dMax, ...dv); dMin = Math.min(dMin, ...dv); }
+
+    // Axe secondaire : bornes par défaut selon la mesure, extension automatique.
+    const sv = sec.map(p=>p.y);
+    let sMin, sMax, sStep;
+    if (secondary === "temp") {
+      sMin = Math.floor(Math.min(-5, ...sv) / 5) * 5;
+      sMax = Math.ceil(Math.max(25, ...sv) / 5) * 5;
+      sStep = 5;
+    } else if (secondary === "ph") {
+      sMin = Math.min(3.5, ...sv);
+      sMax = Math.max(5.2, ...sv);
+    } else {
+      sMin = Math.min(0, ...sv);
+      sMax = Math.ceil(Math.max(3, ...sv));
+      sStep = 0.5;
+    }
+    const sScale = { position:"right", min:sMin, max:sMax, grid:{drawOnChartArea:false},
+      ticks:{ font:{size:11} }, title:{display:true,text:secLabel,font:{size:11}} };
+    if (sStep) sScale.ticks.stepSize = sStep;
+
     if (CHART) CHART.destroy();
     CHART = new Chart(canvas.getContext("2d"), {
       type:"line",
@@ -421,8 +450,10 @@ function viewCourbes(root) {
         interaction:{mode:"nearest",intersect:false},
         scales:{
           x:{ type:"linear", ticks:{ callback:(v)=>fmtDate(new Date(v).toISOString()), maxRotation:0, font:{size:11} } },
-          d:{ position:"left", ticks:{ callback:(v)=>sgToAbbr(v), font:{size:11} }, title:{display:true,text:"Densité (abr.)",font:{size:11}} },
-          s:{ position:"right", grid:{drawOnChartArea:false}, ticks:{font:{size:11}}, title:{display:true,text:secLabel,font:{size:11}} },
+          d:{ position:"left", min:dMin, max:dMax,
+              ticks:{ callback:(v)=>sgToAbbr(v), stepSize:0.010, font:{size:11} },
+              title:{display:true,text:"Densité (abr.)",font:{size:11}} },
+          s:sScale,
         },
         plugins:{
           legend:{labels:{font:{size:12}}},
@@ -432,7 +463,7 @@ function viewCourbes(root) {
           } },
         },
       },
-      plugins:[ addMarkersPlugin(markers) ],
+      plugins:[ addMarkersPlugin(markers), zeroTempLine(secondary === "temp") ],
     });
   }
 
@@ -471,6 +502,24 @@ function viewCourbes(root) {
 
   sel.addEventListener("change", load);
   load();
+}
+
+function zeroTempLine(active) {
+  return {
+    id:"zeroTemp",
+    afterDatasetsDraw(chart){
+      if (!active) return;
+      const s = chart.scales.s; if (!s) return;
+      const y = s.getPixelForValue(0);
+      const { left, right } = chart.chartArea;
+      if (y == null || isNaN(y) || y < chart.chartArea.top || y > chart.chartArea.bottom) return;
+      const ctx = chart.ctx; ctx.save();
+      ctx.strokeStyle = "#0e7490"; ctx.lineWidth = 1.5; ctx.setLineDash([6,3]); ctx.globalAlpha = .55;
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke();
+      ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.fillStyle = "#0e7490"; ctx.font = "10px system-ui";
+      ctx.fillText("0 °C", left + 4, y - 3); ctx.restore();
+    }
+  };
 }
 
 function addMarkersPlugin(markers) {
@@ -587,6 +636,142 @@ function viewLots(root) {
     add.appendChild(ab); fc.appendChild(add);
   }
   right.appendChild(fc);
+}
+
+/* ============================ IMPORT EXCEL ============================ */
+const normKey = (s) => String(s).trim().toLowerCase().replace(/\s+/g," ");
+function buildLookup(fs){ const m={}; for(const f of fs) m[normKey(f.name)] = f.name; return m; }
+function resolveFerm(raw, lk){
+  if (raw==null || raw==="") return null;
+  const k = normKey(raw); if (lk[k]) return lk[k];
+  const m = k.match(/^cc\s*#?\s*(\d+)$/); if (m && lk["cc #"+m[1]]) return lk["cc #"+m[1]];
+  return null;
+}
+function normMeasure(v){
+  if (v==null) return null; const s = String(v).trim().toLowerCase();
+  if (s.startsWith("press")) return "press";
+  if (s.startsWith("temp") || s.includes("°")) return "temp";
+  if (s.startsWith("dens")) return "dens";
+  if (s==="ph") return "ph";
+  return null;
+}
+function xlDateStr(v){
+  if (v==null || v==="") return null;
+  if (v instanceof Date && !isNaN(v)) return new Date(Date.UTC(v.getFullYear(),v.getMonth(),v.getDate())).toISOString().slice(0,10);
+  if (typeof v==="number"){ const d=new Date(Math.round((v-25569)*86400*1000)); return isNaN(d)?null:d.toISOString().slice(0,10); }
+  const d=new Date(v); return isNaN(d)?null:d.toISOString().slice(0,10);
+}
+// rows = tableau de lignes (header:1). Retourne [{ferm,date,press,temp,dens,ph}]
+function parseSheet(rows, lk){
+  let hi = rows.findIndex(r => r && r[0]!=null && String(r[0]).trim().toLowerCase().startsWith("date"));
+  if (hi < 0) hi = 0;
+  const header = rows[hi] || []; const colFerm = {};
+  for (let c=2; c<header.length; c++){ const nm = resolveFerm(header[c], lk); if (nm) colFerm[c]=nm; }
+  const out = {}; let cur = null;
+  for (let i=hi+1; i<rows.length; i++){
+    const r = rows[i]; if (!r) continue;
+    const ds = xlDateStr(r[0]); if (ds) cur = ds;
+    const mt = normMeasure(r[1]); if (!mt || !cur) continue;
+    for (const c in colFerm){
+      let v = r[c]; if (v==null || v==="") continue;
+      v = (typeof v==="number") ? v : parseFloat(String(v).replace(",","."));
+      if (isNaN(v)) continue;
+      const key = colFerm[c]+"||"+cur;
+      (out[key] ??= { ferm:colFerm[c], date:cur }); out[key][mt] = v;
+    }
+  }
+  return Object.values(out);
+}
+function downloadTemplate(){
+  const header = ["Date","Mesure", ...FERM_ORDER];
+  const aoa = [header];
+  const measures = ["Pression","Température","Densité","pH"];
+  for (let d=0; d<25; d++) measures.forEach(mz => aoa.push(["", mz, ...FERM_ORDER.map(()=> "")]));
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!cols"] = header.map((_,i)=> ({ wch: i===0?12 : i===1?13 : 9 }));
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Relevés");
+  XLSX.writeFile(wb, "modele_releves.xlsx");
+}
+
+function viewImport(root){
+  if (!canWrite()){ root.appendChild(emptyBox("Accès restreint","Réservé aux opérateurs et superviseurs.")); return; }
+  if (!window.XLSX){ root.appendChild(emptyBox("Composant indisponible","La librairie de lecture Excel n'a pas pu être chargée (vérifiez la connexion internet).")); return; }
+
+  const card = el("div",{class:"card",style:"max-width:780px"});
+  card.appendChild(el("h3",{},"Import d'un classeur Excel"));
+  card.appendChild(el("p",{class:"hint"},
+    "Une colonne par fermenteur. Pour chaque date (colonne A, sur la 1ʳᵉ ligne du bloc), 4 lignes en colonne B : "+
+    "Pression, Température, Densité, pH. Densités en abrégé (59 = 1.059). Chaque relevé est rattaché au lot actif du fermenteur."));
+
+  const tmplBtn = el("button",{class:"btn ghost"},"⬇ Télécharger le modèle");
+  tmplBtn.addEventListener("click", downloadTemplate);
+  card.appendChild(tmplBtn);
+
+  const file = el("input",{class:"mt", type:"file", accept:".xlsx,.xls"});
+  card.appendChild(el("div",{class:"mt"})); card.appendChild(file);
+
+  const summary = el("div",{class:"mt"}); card.appendChild(summary);
+  const importBtn = el("button",{class:"btn primary mt hidden"},"Importer les relevés");
+  card.appendChild(importBtn);
+  const result = el("div",{class:"mt"}); card.appendChild(result);
+  root.appendChild(card);
+
+  let toInsert = [];
+
+  file.addEventListener("change", async ()=>{
+    summary.innerHTML=""; result.innerHTML=""; importBtn.classList.add("hidden"); toInsert=[];
+    const f = file.files[0]; if (!f) return;
+    let parsed;
+    try {
+      const buf = await f.arrayBuffer();
+      const wb = XLSX.read(buf, { type:"array", cellDates:true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, blankrows:false });
+      parsed = parseSheet(rows, buildLookup(S.fermenters));
+    } catch(e){ summary.innerHTML = `<p class="err">Lecture impossible : ${e.message}</p>`; return; }
+    if (!parsed.length){ summary.innerHTML = `<p class="err">Aucun relevé détecté — vérifiez le format (entête « Date », libellés des mesures).</p>`; return; }
+
+    const activeByFerm = {}; S.lots.filter(l=>l.status==="Active").forEach(l=> activeByFerm[l.fermenter_name]=l);
+    const noLot = new Set(); const lotIds = new Set(); const candidates = [];
+    for (const m of parsed){
+      const lot = activeByFerm[m.ferm];
+      if (!lot){ noLot.add(m.ferm); continue; }
+      lotIds.add(lot.id); candidates.push({ m, lot });
+    }
+    let already = new Set();
+    try {
+      if (lotIds.size){
+        const ex = await q(db.from("measurements").select("lot_id,date").in("lot_id",[...lotIds]).eq("operator","Import xlsx"));
+        ex.forEach(r => already.add(r.lot_id+"||"+r.date));
+      }
+    } catch(_){}
+    let dupes = 0;
+    for (const { m, lot } of candidates){
+      if (already.has(lot.id+"||"+m.date)){ dupes++; continue; }
+      toInsert.push({
+        lot_id: lot.id, ts: m.date+"T12:00:00", date: m.date,
+        densite_sg: m.dens!=null ? parseDens(m.dens) : null,
+        ph: m.ph ?? null, temp: m.temp ?? null, pressure: m.press ?? null,
+        phase: lot.phase, operator: "Import xlsx" });
+    }
+    const dates = [...new Set(parsed.map(m=>m.date))].sort();
+    const ferms = [...new Set(candidates.map(c=>c.lot.fermenter_name))].sort((a,b)=> fermRank(a)-fermRank(b));
+    let html = `<p><strong>${parsed.length}</strong> relevés lus${dates.length?` · du ${fmtDate(dates[0])} au ${fmtDate(dates[dates.length-1])}`:""}.</p>`;
+    html += `<p><strong>${toInsert.length}</strong> à importer sur ${ferms.length} fermenteur(s) actif(s)${dupes?` · ${dupes} déjà importés (ignorés)`:""}.</p>`;
+    if (noLot.size) html += `<p class="err">Sans lot actif, donc ignorés : ${[...noLot].sort((a,b)=>fermRank(a)-fermRank(b)).join(", ")}</p>`;
+    summary.innerHTML = html;
+    if (toInsert.length) importBtn.classList.remove("hidden");
+  });
+
+  importBtn.addEventListener("click", async ()=>{
+    importBtn.disabled = true; importBtn.textContent = "Import en cours…";
+    try {
+      for (let i=0; i<toInsert.length; i+=200) await q(db.from("measurements").insert(toInsert.slice(i,i+200)));
+      result.innerHTML = `<p class="ok">${toInsert.length} relevés importés ✓</p>`;
+      importBtn.classList.add("hidden"); toast("Import terminé ✓");
+      await refreshData();
+    } catch(e){ result.innerHTML = `<p class="err">Échec : ${e.message}</p>`; importBtn.disabled=false; importBtn.textContent="Importer les relevés"; }
+  });
 }
 
 /* ============================ ADMIN ============================ */
