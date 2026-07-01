@@ -294,7 +294,7 @@ function viewSaisie(root) {
     if (sg==null && num(fPh.value)==null && num(fTemp.value)==null && num(fPress.value)==null) { toast("Renseignez au moins une valeur"); return; }
     try {
       await q(db.from("measurements").insert({
-        lot_id: l.id, date: fDate.value, densite_sg: sg, ph: num(fPh.value),
+        lot_id: l.id, ts: (fDate.value || today()) + "T12:00:00", date: fDate.value, densite_sg: sg, ph: num(fPh.value),
         temp: num(fTemp.value), pressure: num(fPress.value), phase: l.phase,
         operator: fOp.value.trim() || null, note: fNote.value.trim() || null }));
       fDens.value=""; fPh.value=""; fTemp.value=""; fPress.value=""; fNote.value=""; platoHint.textContent="";
@@ -333,7 +333,7 @@ function addPanel(getLotId) {
     if (!aLabel.value.trim()) { toast("Précisez l'ajout"); return; }
     try{
       await q(db.from("additions").insert({
-        lot_id: getLotId(), date: aDate.value, type: aType.value, label: aLabel.value.trim(),
+        lot_id: getLotId(), ts: (aDate.value || today()) + "T12:00:00", date: aDate.value, type: aType.value, label: aLabel.value.trim(),
         qty: num(aQty.value), unit: aUnit.value, operator: S.me.display_name }));
       aLabel.value=""; aQty.value=""; toast("Ajout enregistré ✓"); load();
     }catch(e){ toast(e.message); }
@@ -370,7 +370,7 @@ function viewCourbes(root) {
   ch.appendChild(seg); chartCard.appendChild(ch);
   const wrap = el("div",{class:"chart-wrap mt"}); const canvas = el("canvas");
   wrap.appendChild(canvas); chartCard.appendChild(wrap);
-  chartCard.appendChild(el("p",{class:"hint"},"Densité à gauche · série à droite · traits verts = ajouts (dry hop, fruits, sucres…)"));
+  chartCard.appendChild(el("p",{class:"hint"},"Densité à gauche (◆ = DiM, point de départ) · série à droite · traits verts = ajouts (dry hop, fruits, sucres…)"));
   root.appendChild(chartCard);
 
   const histCard = el("div",{class:"card mt"});
@@ -407,6 +407,12 @@ function viewCourbes(root) {
 
   function draw() {
     const dens = meas.filter(m=>m.densite_sg!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m.densite_sg}));
+    // DiM = point de départ de la densité, à la date de départ du lot.
+    let dimAdded = false;
+    if (lot.og && lot.start_date) {
+      const startT = new Date(lot.start_date + "T12:00:00").getTime();
+      if (!dens.length || dens[0].x > startT) { dens.unshift({ x: startT, y: +lot.og }); dimAdded = true; }
+    }
     const sec = meas.filter(m=>m[secondary]!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m[secondary]}));
     const secLabel = {temp:"Température (°C)",ph:"pH",pressure:"Pression (bar)"}[secondary];
     const secColor = {temp:"#0e7490",ph:"#7c3aed",pressure:"#475569"}[secondary];
@@ -442,7 +448,9 @@ function viewCourbes(root) {
     CHART = new Chart(canvas.getContext("2d"), {
       type:"line",
       data:{ datasets:[
-        { label:"Densité", data:dens, yAxisID:"d", borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2.5, tension:.25, pointRadius:3 },
+        { label:"Densité", data:dens, yAxisID:"d", borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2.5, tension:.25,
+          pointRadius:(c)=> dimAdded && c.dataIndex===0 ? 5.5 : 3,
+          pointStyle:(c)=> dimAdded && c.dataIndex===0 ? "rectRot" : "circle" },
         { label:secLabel, data:sec, yAxisID:"s", borderColor:secColor, backgroundColor:secColor, borderWidth:1.8, tension:.25, pointRadius:2.5 },
       ]},
       options:{
@@ -459,7 +467,9 @@ function viewCourbes(root) {
           legend:{labels:{font:{size:12}}},
           tooltip:{ callbacks:{
             title:(items)=> items.length?fmtDT(new Date(items[0].parsed.x).toISOString()):"",
-            label:(it)=> it.dataset.label==="Densité" ? `Densité : ${sgToAbbr(it.parsed.y)}` : `${it.dataset.label} : ${it.parsed.y}`,
+            label:(it)=> it.dataset.label==="Densité"
+              ? `${dimAdded && it.dataIndex===0 ? "DiM" : "Densité"} : ${sgToAbbr(it.parsed.y)}`
+              : `${it.dataset.label} : ${it.parsed.y}`,
           } },
         },
       },
