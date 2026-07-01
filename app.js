@@ -81,6 +81,11 @@ const RECIPES = ["Alma","Big Boy","Cat Soup","Cindy Bunny","Cute and Sober","Dem
   "Double Belge","Hazy Diamond","IPA","IPA Salem","Lager","M'. Joe","NEIPA","Nevermore",
   "Nina Bianca","Pilsner","Pilsner Salem","Red Tears"];
 
+// Phases (ordre = progression). Reculer d'une phase est reserve aux superviseurs.
+const PHASES = ["Fermentation","15°C","Garde"];
+const phaseRank = (p)=>{ const i = PHASES.indexOf(p); return i<0 ? 0 : i; };
+const phaseClass = (p)=> p==="Garde" ? "garde" : (p==="15°C" ? "palier" : "ferm");
+
 // Sélecteur de bière : liste déroulante (gamme permanente) + case « éphémère » -> saisie libre.
 function beerSelector(current){
   const control = el("div");
@@ -219,7 +224,7 @@ async function refreshData() {
 function buildTabs() {
   const tabs = [];
   if (canWrite()) tabs.push(["saisie","Saisie"]);
-  tabs.push(["courbes","Courbes"], ["lots","Cuves & lots"]);
+  tabs.push(["courbes","Courbes"], ["lots","Cuves & Brassins"]);
   if (canWrite()) tabs.push(["import","Import"]);
   if (isSup()) tabs.push(["admin","Admin"]);
   const nav = $("#tabs"); nav.innerHTML = "";
@@ -292,7 +297,7 @@ function viewSaisie(root) {
     const l = active.find(x=>x.id==lotId);
     lotInfo.innerHTML = "";
     lotInfo.append(
-      el("span",{class:`badge ${l.phase==="Garde"?"garde":"ferm"}`}, l.phase),
+      el("span",{class:`badge ${phaseClass(l.phase)}`}, l.phase),
       el("span",{class:"muted"}, `${l.fermenter_name} · ${l.volume_hl||"?"} hl · ${l.site||""}`));
     if (l.og) lotInfo.append(el("span",{class:"muted"}, `· DiM ${sgToAbbr(+l.og)} (${sgToPlato(+l.og).toFixed(1)}°P)`));
     try {
@@ -333,9 +338,10 @@ function addPanel(getLotId) {
   const aDate = inp("date", today());
   const aType = sels(ADD_TYPES);
   const aLabel = inp("text","","Citra, framboise, sucre candi…");
+  const aBatch = inp("text","","N° de lot");
   const aQty = inp("text","","200");
   const aUnit = sels(UNITS);
-  card.append(lab("Date", aDate), lab("Type", aType), lab("Désignation", aLabel));
+  card.append(lab("Date", aDate), lab("Type", aType), lab("Désignation", aLabel), lab("N° de lot", aBatch));
   const qrow = el("div",{class:"row"}); qrow.style.gridTemplateColumns = "1fr 1fr";
   qrow.append(lab("Quantité", aQty), lab("Unité", aUnit));
   card.appendChild(qrow);
@@ -348,7 +354,7 @@ function addPanel(getLotId) {
       const arr = await q(db.from("additions").select("*").eq("lot_id", getLotId()).order("ts"));
       recent.innerHTML = "";
       arr.slice(-4).reverse().forEach(a=> recent.appendChild(el("div",{class:"flexb",style:"font-size:12px;border-top:1px solid #f0efed;padding-top:6px"},
-        `<span>${fmtDate(a.ts)} · ${a.type} — ${a.label}</span><span class="spacer"></span><span class="muted">${a.qty!=null?`${a.qty} ${a.unit||""}`:""}</span>`)));
+        `<span>${fmtDate(a.ts)} · ${a.type} — ${a.label}${a.batch_no?` <span class="muted">(lot ${a.batch_no})</span>`:""}</span><span class="spacer"></span><span class="muted">${a.qty!=null?`${a.qty} ${a.unit||""}`:""}</span>`)));
     } catch(e){ /* silencieux */ }
   }
   btn.addEventListener("click", async ()=>{
@@ -356,8 +362,8 @@ function addPanel(getLotId) {
     try{
       await q(db.from("additions").insert({
         lot_id: getLotId(), ts: (aDate.value || today()) + "T12:00:00Z", date: aDate.value, type: aType.value, label: aLabel.value.trim(),
-        qty: num(aQty.value), unit: aUnit.value, operator: S.me.display_name }));
-      aLabel.value=""; aQty.value=""; toast("Ajout enregistré ✓"); load();
+        batch_no: aBatch.value.trim() || null, qty: num(aQty.value), unit: aUnit.value, operator: S.me.display_name }));
+      aLabel.value=""; aBatch.value=""; aQty.value=""; toast("Ajout enregistré ✓"); load();
     }catch(e){ toast(e.message); }
   });
   load();
@@ -400,6 +406,11 @@ function viewCourbes(root) {
   const histBody = el("div",{class:"scroll"}); histCard.appendChild(histBody);
   root.appendChild(histCard);
 
+  const addsCard = el("div",{class:"card mt"});
+  addsCard.appendChild(el("h3",{},"Ajouts"));
+  const addsBody = el("div",{class:"scroll"}); addsCard.appendChild(addsBody);
+  root.appendChild(addsCard);
+
   let meas = [], adds = [], lot = null;
 
   async function load() {
@@ -410,7 +421,18 @@ function viewCourbes(root) {
         q(db.from("additions").select("*").eq("lot_id", lot.id).order("ts")),
       ]);
     } catch(e){ toast(e.message); meas=[]; adds=[]; }
-    renderStats(); draw(); renderHist();
+    renderStats(); draw(); renderHist(); renderAdds();
+  }
+
+  function renderAdds() {
+    addsBody.innerHTML = "";
+    if (!adds.length) { addsBody.appendChild(el("p",{class:"muted"},"Aucun ajout.")); return; }
+    const t = el("table");
+    t.innerHTML = `<thead><tr><th>Nature</th><th>Désignation</th><th>N° de lot</th><th>Quantité</th><th>Date & heure</th></tr></thead>`;
+    const tb = el("tbody");
+    [...adds].reverse().forEach(a=> tb.appendChild(el("tr",{},
+      `<td>${a.type||""}</td><td>${a.label||""}</td><td>${a.batch_no||"—"}</td><td>${a.qty!=null?`${a.qty} ${a.unit||""}`:"—"}</td><td>${fmtDT(a.ts)}</td>`)));
+    t.appendChild(tb); addsBody.appendChild(t);
   }
 
   function renderStats() {
@@ -591,7 +613,7 @@ function editLot(lot){
   const cOg = inp("text", lot.og!=null ? sgToAbbr(+lot.og) : "", "59");
   const ogHint = el("div",{class:"hint"});
   const cDate = inp("date", lot.start_date || today());
-  const phase = sels([["Fermentation","Fermentation"],["Garde","Garde"]], lot.phase);
+  const phase = sels([["Fermentation","Fermentation"],["15°C","15°C"],["Garde","Garde"]], lot.phase);
 
   const r = el("div",{class:"row"});
   r.append(lab("Fermenteur", fSel), lab("Bière", beerSel.control),
@@ -627,20 +649,48 @@ function viewLots(root) {
   if (canWrite()) {
     const occupied = new Set(S.lots.filter(l=>l.status==="Active").map(l=>l.fermenter_id));
     const create = el("div",{class:"card"});
-    create.appendChild(el("h3",{},"Nouveau lot (bière dans un fermenteur)"));
-    const fSel = el("select");
-    S.fermenters.forEach(f=>{ const o = el("option",{value:f.id}, `${f.name}${occupied.has(f.id)?" (occupé)":""}`); if(occupied.has(f.id)) o.disabled=true; fSel.appendChild(o); });
+    create.appendChild(el("h3",{},"Nouveau brassin"));
+    const fSel = el("select"); const fOpts = {};
+    S.fermenters.forEach(f=>{ const o = el("option",{value:f.id}, `${f.name}${occupied.has(f.id)?" (occupé)":""}`); if(occupied.has(f.id)) o.disabled=true; fOpts[f.id]=o; fSel.appendChild(o); });
     const beerSel = beerSelector("");
     const cOg = inp("text","","59");
     const ogHint = el("div",{class:"hint"});
     const cDate = inp("date", today());
+    const cEnd = inp("date","");
+    const endLab = lab("Date de fin", cEnd); endLab.classList.add("hidden");
     const r = el("div",{class:"row"});
     r.append(lab("Fermenteur",fSel), lab("Bière (gamme permanente)", beerSel.control),
-             lab("DiM — densité initiale (ex. 59)", cOg, ogHint), lab("Date de départ", cDate));
+             lab("DiM — densité initiale (ex. 59)", cOg, ogHint), lab("Date de départ", cDate), endLab);
     create.appendChild(r);
     create.appendChild(beerSel.chkLine);
+    let cHist = null;
+    if (isSup()) {
+      const histLine = el("label",{style:"display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;font-weight:500"});
+      cHist = el("input"); cHist.type = "checkbox";
+      histLine.append(cHist, document.createTextNode("Lot déjà terminé (historique) — autorise une cuve occupée"));
+      create.appendChild(histLine);
+      cHist.addEventListener("change", ()=>{
+        endLab.classList.toggle("hidden", !cHist.checked);
+        Object.entries(fOpts).forEach(([id,o])=>{ if (occupied.has(Number(id))) o.disabled = !cHist.checked; });
+      });
+    }
     cOg.addEventListener("input",()=>{ const sg=parseDens(cOg.value); ogHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:""; });
-    const cBtn = el("button",{class:"btn primary mt"},"Créer le lot");
+    const cBtn = el("button",{class:"btn primary mt"},"Créer le brassin");
+    create.appendChild(cBtn); left.appendChild(create);
+    cBtn.addEventListener("click", async ()=>{
+      const beerName = beerSel.get();
+      if(!beerName){ toast("Choisissez ou saisissez une bière"); return; }
+      const og = parseDens(cOg.value);
+      if(og==null){ toast("La densité initiale (DiM) est obligatoire"); return; }
+      const hist = !!(cHist && cHist.checked);
+      if (hist && !cEnd.value){ toast("Date de fin requise pour un lot historique"); return; }
+      const payload = { fermenter_id:Number(fSel.value), beer_name:beerName, og:og, start_date:cDate.value };
+      if (hist){ payload.status = "Terminé"; payload.end_date = cEnd.value; payload.phase = "Garde"; }
+      try{
+        await q(db.from("lots").insert(payload));
+        toast(hist ? "Brassin historique ajouté ✓" : "Brassin créé ✓"); await refreshData(); go("lots");
+      }catch(e){ toast(e.message); }
+    });
     create.appendChild(cBtn); left.appendChild(create);
     cBtn.addEventListener("click", async ()=>{
       const beerName = beerSel.get();
@@ -657,20 +707,23 @@ function viewLots(root) {
 
   const active = S.lots.filter(l=>l.status==="Active");
   const ac = el("div",{class:"card"});
-  ac.appendChild(el("h3",{},`Lots actifs (${active.length})`));
+  ac.appendChild(el("h3",{},`Brassins actifs (${active.length})`));
   if(!active.length) ac.appendChild(el("p",{class:"muted"},"Aucun lot actif."));
   active.forEach(l=>{
     const item = el("div",{class:"lot-item"});
     item.appendChild(el("div",{style:"flex:1"},`<div class="title">${l.fermenter_name} — ${l.beer_name}</div><div class="sub">Départ ${l.start_date?fmtDate(l.start_date):"?"} ${l.og?`· DiM ${sgToAbbr(+l.og)}`:""}</div>`));
-    item.appendChild(el("span",{class:`badge ${l.phase==="Garde"?"garde":"ferm"}`}, l.phase));
+    item.appendChild(el("span",{class:`badge ${phaseClass(l.phase)}`}, l.phase));
     if (canWrite()) {
-      // Fermentation -> Garde : tout opérateur. Garde -> Fermentation (retour) : superviseur seulement.
-      const canRevert = isSup();
-      if (l.phase === "Fermentation" || canRevert) {
-        const toggle = el("button",{class:"btn ghost sm"}, l.phase==="Fermentation"?"→ Garde":"→ Fermentation");
-        toggle.addEventListener("click", async ()=>{ try{ await q(db.from("lots").update({phase:l.phase==="Fermentation"?"Garde":"Fermentation"}).eq("id",l.id)); toast("Phase mise à jour"); await refreshData(); go("lots"); }catch(e){toast(e.message);} });
-        item.append(toggle);
-      }
+      // Avancer d'une phase : tout opérateur. Reculer vers une phase antérieure : superviseur seulement.
+      PHASES.forEach(target=>{
+        const rc = phaseRank(l.phase), rt = phaseRank(target);
+        if (rt === rc) return;
+        const forward = rt > rc;
+        if (!forward && !isSup()) return;
+        const b = el("button",{class:"btn ghost sm"}, `${forward?"→":"←"} ${target}`);
+        b.addEventListener("click", async ()=>{ try{ await q(db.from("lots").update({phase:target}).eq("id",l.id)); toast("Phase mise à jour"); await refreshData(); go("lots"); }catch(e){toast(e.message);} });
+        item.append(b);
+      });
       const close = el("button",{class:"btn ghost sm"},"Clôturer");
       close.addEventListener("click", async ()=>{ if(confirm("Clôturer ce lot ?")){ try{ await q(db.from("lots").update({status:"Terminé", end_date:today()}).eq("id",l.id)); toast("Lot clôturé"); await refreshData(); go("lots"); }catch(e){toast(e.message);} }});
       item.append(close);
@@ -683,7 +736,7 @@ function viewLots(root) {
   const done = S.lots.filter(l=>l.status!=="Active");
   if (done.length) {
     const dc = el("div",{class:"card"});
-    dc.appendChild(el("h3",{},`Lots terminés (${done.length})`));
+    dc.appendChild(el("h3",{},`Brassins terminés (${done.length})`));
     done.forEach(l=>{
       const row = el("div",{class:"flexb",style:"border-top:1px solid #f0efed;padding:7px 0;font-size:13px"});
       row.appendChild(el("span",{},`${l.fermenter_name} — ${l.beer_name} <span class="muted">· ${l.start_date?fmtDate(l.start_date):""} → ${l.end_date?fmtDate(l.end_date):""}</span>`));
