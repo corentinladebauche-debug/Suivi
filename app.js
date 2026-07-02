@@ -77,9 +77,27 @@ const UNITS = ["g/hl","kg/hl","kg","g","L","g/L"];
 
 // Gamme permanente : recettes proposees par defaut a la creation d'un lot.
 // Editez simplement cette liste pour la mettre a jour.
-const RECIPES = ["Alma","Big Boy","Cat Soup","Cindy Bunny","Cute and Sober","Demi mondaine",
-  "Double Belge","Hazy Diamond","IPA","IPA Salem","Lager","M'. Joe","NEIPA","Nevermore",
-  "Nina Bianca","Pilsner","Pilsner Salem","Red Tears"];
+const RECIPES = [
+  {name:'Alma', style:'IPA', dit:1.043, dft:1.006},
+  {name:'Big Boy', style:'Noir', dit:1.099, dft:1.03},
+  {name:'Cat Soup', style:'IPA', dit:1.072, dft:1.01},
+  {name:'Cindy Bunny', style:'Belge', dit:1.075, dft:1.01},
+  {name:'Cute and Sober', style:'Sour/fruits', dit:1.017, dft:1.012},
+  {name:'Demi mondaine', style:'Noir', dit:1.108, dft:1.032},
+  {name:'Double Belge', style:'Belge', dit:1.075, dft:1.021},
+  {name:'Hazy Diamond', style:'Sour/fruits', dit:1.05, dft:1.01},
+  {name:'IPA', style:'IPA', dit:1.054, dft:1.006},
+  {name:'IPA Salem', style:'IPA', dit:1.054, dft:1.006},
+  {name:'Lager', style:'Lager', dit:1.046, dft:1.009},
+  {name:"M'. Joe", style:'Noir', dit:1.052, dft:1.013},
+  {name:'NEIPA', style:'NEIPA', dit:1.059, dft:1.012},
+  {name:'Nevermore', style:'Noir', dit:1.104, dft:1.031},
+  {name:'Nina Bianca', style:'Belge', dit:1.043, dft:1.005},
+  {name:'Pilsner', style:'Lager', dit:1.046, dft:1.009},
+  {name:'Pilsner Salem', style:'Lager', dit:1.046, dft:1.009},
+  {name:'Red Tears', style:'Sour/fruits', dit:1.06, dft:1.018}
+];
+const STYLES = ["Lager","IPA","NEIPA","Belge","Noir","Sour/fruits"];
 
 // Phases (ordre = progression). Reculer d'une phase est reserve aux superviseurs.
 const PHASES = ["Fermentation","15°C","Garde"];
@@ -87,19 +105,44 @@ const phaseRank = (p)=>{ const i = PHASES.indexOf(p); return i<0 ? 0 : i; };
 const phaseClass = (p)=> p==="Garde" ? "garde" : (p==="15°C" ? "palier" : "ferm");
 
 // Sélecteur de bière : liste déroulante (gamme permanente) + case « éphémère » -> saisie libre.
-function beerSelector(current){
+function beerSelector(current, opts){
+  opts = opts || {};
   const control = el("div");
-  const rec = sels(RECIPES.map(r=>[r,r]), RECIPES.includes(current) ? current : RECIPES[0]);
+  const recNames = RECIPES.map(r=>[r.name, r.name]);
+  const isEph = !!current && !RECIPES.find(r=>r.name===current);
+  const rec = sels(recNames, (!isEph && current) ? current : RECIPES[0].name);
   const free = inp("text","","Nom de la bière éphémère");
-  control.append(rec, free);
+  // Éphémère : style (comportement) + case fruits
+  const styleSel = sels(STYLES.map(s=>[s,s]), STYLES.includes(opts.style) ? opts.style : STYLES[0]);
+  const styleLab = lab("Style (comportement)", styleSel);
+  const fruitsLine = el("label",{style:"display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;font-weight:500"});
+  const fruitsCb = el("input"); fruitsCb.type = "checkbox"; fruitsCb.checked = !!opts.fruits;
+  fruitsLine.append(fruitsCb, document.createTextNode("Ajout de fruits"));
+  control.append(rec, free, styleLab, fruitsLine);
+
   const chkLine = el("label",{style:"display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;font-weight:500"});
   const chk = el("input"); chk.type = "checkbox";
   chkLine.append(chk, document.createTextNode("Nouvelle bière (gamme éphémère)"));
-  const isEph = !!current && !RECIPES.includes(current);
   if (isEph){ chk.checked = true; free.value = current; }
-  const sync = ()=>{ rec.classList.toggle("hidden", chk.checked); free.classList.toggle("hidden", !chk.checked); };
-  chk.addEventListener("change", sync); sync();
-  return { control, chkLine, get: ()=> chk.checked ? free.value.trim() : rec.value };
+
+  const sync = ()=>{
+    const eph = chk.checked;
+    rec.classList.toggle("hidden", eph);
+    free.classList.toggle("hidden", !eph);
+    styleLab.classList.toggle("hidden", !eph);   // style : éphémère seulement (sinon vient de la recette)
+    fruitsLine.classList.toggle("hidden", !eph); // fruits : éphémère seulement
+  };
+  const currentRecipe = ()=> RECIPES.find(r=>r.name===rec.value) || null;
+  chk.addEventListener("change", ()=>{ sync(); if (opts.onPick) opts.onPick(chk.checked ? null : currentRecipe()); });
+  rec.addEventListener("change", ()=>{ if (opts.onPick && !chk.checked) opts.onPick(currentRecipe()); });
+  sync();
+
+  return { control, chkLine,
+    // recette permanente sélectionnée (sinon null)
+    recipe: ()=> chk.checked ? null : currentRecipe(),
+    get: ()=> chk.checked
+      ? { name: free.value.trim(), style: styleSel.value, fruits: fruitsCb.checked }
+      : { name: rec.value, style: (currentRecipe()||{}).style || null, fruits: false } };
 }
 
 /* ============================ Démarrage ============================ */
@@ -301,6 +344,8 @@ function viewSaisie(root) {
       el("span",{class:`badge ${phaseClass(l.phase)}`}, l.phase),
       el("span",{class:"muted"}, `${l.fermenter_name} · ${l.volume_hl||"?"} hl · ${l.site||""}`));
     if (l.og) lotInfo.append(el("span",{class:"muted"}, `· DiM ${sgToAbbr(+l.og)} (${sgToPlato(+l.og).toFixed(1)}°P)`));
+    if (l.dit!=null) lotInfo.append(el("span",{class:"muted"}, ` · DiT ${sgToAbbr(+l.dit)}`));
+    if (l.dft!=null) lotInfo.append(el("span",{class:"muted"}, ` · DfT ${sgToAbbr(+l.dft)}`));
     try {
       const ms = await q(db.from("measurements").select("*").eq("lot_id", lotId).order("ts"));
       recentBody.innerHTML = "";
@@ -403,7 +448,7 @@ function lotCurves(root, lots, emptyMsg) {
   ch.appendChild(seg); chartCard.appendChild(ch);
   const wrap = el("div",{class:"chart-wrap mt"}); const canvas = el("canvas");
   wrap.appendChild(canvas); chartCard.appendChild(wrap);
-  chartCard.appendChild(el("p",{class:"hint"},"Densité à gauche (◆ = DiM, point de départ) · série à droite · traits verts = ajouts (dry hop, fruits, sucres…)"));
+  chartCard.appendChild(el("p",{class:"hint"},"Densité à gauche (◆ = DiM · × = DiT · ligne pointillée = DfT) · série à droite · traits verts = ajouts (dry hop, fruits, sucres…)"));
   root.appendChild(chartCard);
 
   const histCard = el("div",{class:"card mt"});
@@ -502,19 +547,22 @@ function lotCurves(root, lots, emptyMsg) {
     stats.innerHTML = "";
     const add = (k,v)=> stats.appendChild(el("div",{class:"stat"},`<div class="k">${k}</div><div class="v">${v}</div>`));
     add("DiM", og?sgToAbbr(+og):"—");
+    add("DiT", lot.dit!=null?sgToAbbr(+lot.dit):"—");
+    add("DfT", lot.dft!=null?sgToAbbr(+lot.dft):"—");
     add("Volume courant", lot.volume_hl!=null?`${lot.volume_hl} hl`:"—");
     add("Densité actuelle", last?sgToAbbr(+last.densite_sg):"—");
     add("Atténuation app.", att!=null?att.toFixed(0)+" %":"—");
+    add("Style", (lot.style||"—") + (lot.fruits?" · fruits":""));
     add("Relevés", meas.length);
     add("Phase", lot.phase);
   }
 
   function draw() {
+    const startT = lot.start_date ? new Date(lot.start_date + "T12:00:00Z").getTime() : null;
     const dens = meas.filter(m=>m.densite_sg!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m.densite_sg}));
     // DiM = point de départ de la densité, à la date de départ du lot.
     let dimAdded = false;
-    if (lot.og && lot.start_date) {
-      const startT = new Date(lot.start_date + "T12:00:00Z").getTime();
+    if (lot.og && startT) {
       if (!dens.length || dens[0].x > startT) { dens.unshift({ x: startT, y: +lot.og }); dimAdded = true; }
     }
     const sec = meas.filter(m=>m[secondary]!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m[secondary]}));
@@ -530,6 +578,9 @@ function lotCurves(root, lots, emptyMsg) {
     let dMin = 1.000;
     const dv = dens.map(p=>p.y);
     if (dv.length) { dMax = Math.max(dMax, ...dv); dMin = Math.min(dMin, ...dv); }
+    // DiT (théorique) et DfT (finale théorique) peuvent élargir l'échelle
+    if (lot.dit!=null){ dMax = Math.max(dMax, +lot.dit); dMin = Math.min(dMin, +lot.dit); }
+    if (lot.dft!=null){ dMax = Math.max(dMax, +lot.dft); dMin = Math.min(dMin, +lot.dft); }
 
     // Axe secondaire : bornes par défaut selon la mesure, extension automatique.
     const sv = sec.map(p=>p.y);
@@ -557,6 +608,9 @@ function lotCurves(root, lots, emptyMsg) {
         { label:"Densité", data:dens, yAxisID:"d", borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2.5, tension:.25,
           pointRadius:(c)=> dimAdded && c.dataIndex===0 ? 5.5 : 3,
           pointStyle:(c)=> dimAdded && c.dataIndex===0 ? "rectRot" : "circle" },
+        ...(lot.dit!=null && startT ? [{ label:"DiT", data:[{x:startT, y:+lot.dit}], yAxisID:"d",
+          showLine:false, pointStyle:"crossRot", pointRadius:8, pointBorderWidth:2.5,
+          borderColor:"#1d4ed8", backgroundColor:"#1d4ed8" }] : []),
         { label:secLabel, data:sec, yAxisID:"s", borderColor:secColor, backgroundColor:secColor, borderWidth:1.8, tension:.25, pointRadius:2.5 },
       ]},
       options:{
@@ -575,11 +629,13 @@ function lotCurves(root, lots, emptyMsg) {
             title:(items)=> items.length?fmtDT(new Date(items[0].parsed.x).toISOString()):"",
             label:(it)=> it.dataset.label==="Densité"
               ? `${dimAdded && it.dataIndex===0 ? "DiM" : "Densité"} : ${sgToAbbr(it.parsed.y)}`
+              : it.dataset.label==="DiT"
+              ? `DiT : ${sgToAbbr(it.parsed.y)}`
               : `${it.dataset.label} : ${it.parsed.y}`,
           } },
         },
       },
-      plugins:[ addMarkersPlugin(markers), zeroTempLine(secondary === "temp") ],
+      plugins:[ addMarkersPlugin(markers), zeroTempLine(secondary === "temp"), dftLine(lot.dft!=null?+lot.dft:null) ],
     });
   }
 
@@ -621,6 +677,25 @@ function lotCurves(root, lots, emptyMsg) {
 
   sel.addEventListener("change", load);
   load();
+}
+
+function dftLine(dft){
+  return {
+    id:"dftLine",
+    afterDatasetsDraw(chart){
+      if (dft==null) return;
+      const s = chart.scales.d; if (!s) return;
+      const {ctx, chartArea} = chart;
+      const y = s.getPixelForValue(dft);
+      if (y < chartArea.top || y > chartArea.bottom) return;
+      ctx.save();
+      ctx.strokeStyle = "#b45309"; ctx.lineWidth = 1.5; ctx.setLineDash([6,4]);
+      ctx.beginPath(); ctx.moveTo(chartArea.left, y); ctx.lineTo(chartArea.right, y); ctx.stroke();
+      ctx.setLineDash([]); ctx.fillStyle = "#b45309"; ctx.font = "11px system-ui";
+      ctx.fillText("DfT " + sgToAbbr(dft), chartArea.left + 4, y - 4);
+      ctx.restore();
+    }
+  };
 }
 
 function zeroTempLine(active) {
@@ -745,16 +820,20 @@ function editLot(lot){
     if (f.id === lot.fermenter_id) o.selected = true;
     fSel.appendChild(o);
   });
-  const beerSel = beerSelector(lot.beer_name || "");
   const cOg = inp("text", lot.og!=null ? sgToAbbr(+lot.og) : "", "59");
   const ogHint = el("div",{class:"hint"});
+  const cDit = inp("text", lot.dit!=null ? sgToAbbr(+lot.dit) : "", "43");
+  const cDft = inp("text", lot.dft!=null ? sgToAbbr(+lot.dft) : "", "6");
+  const beerSel = beerSelector(lot.beer_name || "", { style:lot.style, fruits:lot.fruits,
+    onPick:(rp)=>{ if(rp){ cDit.value=sgToAbbr(rp.dit); cDft.value=sgToAbbr(rp.dft); } } });
   const cVol = inp("text", lot.volume_hl!=null ? String(lot.volume_hl) : "", "hl");
   const cDate = inp("date", lot.start_date || today());
   const phase = sels([["Fermentation","Fermentation"],["15°C","15°C"],["Garde","Garde"]], lot.phase);
 
   const r = el("div",{class:"row"});
   r.append(lab("Fermenteur", fSel), lab("Bière", beerSel.control),
-           lab("DiM (ex. 59)", cOg, ogHint), lab("Volume (hl)", cVol), lab("Date de départ", cDate), lab("Phase", phase));
+           lab("DiM (ex. 59)", cOg, ogHint), lab("DiT", cDit), lab("DfT", cDft),
+           lab("Volume (hl)", cVol), lab("Date de départ", cDate), lab("Phase", phase));
   card.appendChild(r); card.appendChild(beerSel.chkLine);
   cOg.addEventListener("input",()=>{ const sg=parseDens(cOg.value); ogHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:""; });
 
@@ -769,14 +848,16 @@ function editLot(lot){
     try{ await q(db.from("lots").delete().eq("id",lot.id)); toast("Brassin supprimé"); await refreshData(); go(S.tab); }catch(e){ toast(e.message); }
   });
   save.addEventListener("click", async ()=>{
-    const beerName = beerSel.get();
-    if (!beerName){ toast("Choisissez ou saisissez une bière"); return; }
+    const beer = beerSel.get();
+    if (!beer.name){ toast("Choisissez ou saisissez une bière"); return; }
     const og = parseDens(cOg.value);
     if (og==null){ toast("La DiM est obligatoire"); return; }
     try{
       await q(db.from("lots").update({
-        fermenter_id: Number(fSel.value), beer_name: beerName, og: og, volume_hl: num(cVol.value),
-        start_date: cDate.value, phase: phase.value }).eq("id", lot.id));
+        fermenter_id: Number(fSel.value), beer_name: beer.name, og: og, volume_hl: num(cVol.value),
+        start_date: cDate.value, phase: phase.value, style: beer.style,
+        dit: cDit.value.trim()?parseDens(cDit.value):null, dft: cDft.value.trim()?parseDens(cDft.value):null, fruits: beer.fruits
+      }).eq("id", lot.id));
       toast("Lot mis à jour ✓"); await refreshData(); go(S.tab);
     }catch(e){ toast(e.message); }
   });
@@ -890,7 +971,8 @@ function transferLot(lot){
       // 2) un second brassin (meme biere) est cree pour la cuve 2
       const created = await q(db.from("lots").insert({ fermenter_id:r2.toId, beer_name:lot.beer_name,
         og:lot.og, volume_hl:r2.volume, start_date:lot.start_date, phase:lot.phase,
-        status:lot.status, end_date:lot.end_date }).select("id").single());
+        status:lot.status, end_date:lot.end_date,
+        style:lot.style, dit:lot.dit, dft:lot.dft, fruits:lot.fruits }).select("id").single());
       await doTransfer(created.id, lot.fermenter_id, r2);
       toast("Répartition vers 2 cuves effectuée ✓"); await refreshData(); go(S.tab);
     }catch(e){ toast(e.message); }
@@ -909,18 +991,22 @@ function viewLots(root) {
     create.appendChild(el("h3",{},"Nouveau brassin"));
     const fSel = el("select"); const fOpts = {};
     S.fermenters.forEach(f=>{ const o = el("option",{value:f.id}, `${f.name}${occupied.has(f.id)?" (occupé)":""}`); if(occupied.has(f.id)) o.disabled=true; fOpts[f.id]=o; fSel.appendChild(o); });
-    const beerSel = beerSelector("");
     const cOg = inp("text","","59");
     const ogHint = el("div",{class:"hint"});
+    const cDit = inp("text","","43");
+    const cDft = inp("text","","6");
+    const beerSel = beerSelector("", { onPick:(rp)=>{ if(rp){ cDit.value=sgToAbbr(rp.dit); cDft.value=sgToAbbr(rp.dft); } } });
     const cVol = inp("text","","hl");
     const cDate = inp("date", today());
     const cEnd = inp("date","");
     const endLab = lab("Date de fin", cEnd); endLab.classList.add("hidden");
     const r = el("div",{class:"row"});
     r.append(lab("Fermenteur",fSel), lab("Bière (gamme permanente)", beerSel.control),
-             lab("DiM — densité initiale (ex. 59)", cOg, ogHint), lab("Volume (hl)", cVol), lab("Date de départ", cDate), endLab);
+             lab("DiM — mesurée (ex. 59)", cOg, ogHint), lab("DiT — initiale théo.", cDit), lab("DfT — finale théo.", cDft),
+             lab("Volume (hl)", cVol), lab("Date de départ", cDate), endLab);
     create.appendChild(r);
     create.appendChild(beerSel.chkLine);
+    { const rp = beerSel.recipe(); if(rp){ cDit.value=sgToAbbr(rp.dit); cDft.value=sgToAbbr(rp.dft); } }
     let cHist = null;
     if (isSup()) {
       const histLine = el("label",{style:"display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;font-weight:500"});
@@ -936,31 +1022,20 @@ function viewLots(root) {
     const cBtn = el("button",{class:"btn primary mt"},"Créer le brassin");
     create.appendChild(cBtn); left.appendChild(create);
     cBtn.addEventListener("click", async ()=>{
-      const beerName = beerSel.get();
-      if(!beerName){ toast("Choisissez ou saisissez une bière"); return; }
+      const beer = beerSel.get();
+      if(!beer.name){ toast("Choisissez ou saisissez une bière"); return; }
       const og = parseDens(cOg.value);
       if(og==null){ toast("La densité initiale (DiM) est obligatoire"); return; }
       const vol = num(cVol.value);
       if(vol==null){ toast("Le volume (hl) est obligatoire"); return; }
       const hist = !!(cHist && cHist.checked);
       if (hist && !cEnd.value){ toast("Date de fin requise pour un lot historique"); return; }
-      const payload = { fermenter_id:Number(fSel.value), beer_name:beerName, og:og, volume_hl:vol, start_date:cDate.value };
+      const payload = { fermenter_id:Number(fSel.value), beer_name:beer.name, og:og, volume_hl:vol, start_date:cDate.value,
+        style:beer.style, dit: cDit.value.trim()?parseDens(cDit.value):null, dft: cDft.value.trim()?parseDens(cDft.value):null, fruits:beer.fruits };
       if (hist){ payload.status = "Terminé"; payload.end_date = cEnd.value; payload.phase = "Garde"; }
       try{
         await q(db.from("lots").insert(payload));
         toast(hist ? "Brassin historique ajouté ✓" : "Brassin créé ✓"); await refreshData(); go("lots");
-      }catch(e){ toast(e.message); }
-    });
-    create.appendChild(cBtn); left.appendChild(create);
-    cBtn.addEventListener("click", async ()=>{
-      const beerName = beerSel.get();
-      if(!beerName){ toast("Choisissez ou saisissez une bière"); return; }
-      const og = parseDens(cOg.value);
-      if(og==null){ toast("La densité initiale (DiM) est obligatoire"); return; }
-      try{
-        await q(db.from("lots").insert({ fermenter_id:Number(fSel.value), beer_name:beerName,
-          og:og, start_date:cDate.value }));
-        toast("Lot créé ✓"); await refreshData(); go("lots");
       }catch(e){ toast(e.message); }
     });
   }
@@ -971,7 +1046,7 @@ function viewLots(root) {
   if(!active.length) ac.appendChild(el("p",{class:"muted"},"Aucun lot actif."));
   active.forEach(l=>{
     const item = el("div",{class:"lot-item"});
-    item.appendChild(el("div",{style:"flex:1"},`<div class="title">${l.fermenter_name} — ${l.beer_name}</div><div class="sub">Départ ${l.start_date?fmtDate(l.start_date):"?"} ${l.volume_hl!=null?`· ${l.volume_hl} hl`:""} ${l.og?`· DiM ${sgToAbbr(+l.og)}`:""}</div>`));
+    item.appendChild(el("div",{style:"flex:1"},`<div class="title">${l.fermenter_name} — ${l.beer_name}${l.fruits?" 🍓":""}</div><div class="sub">Départ ${l.start_date?fmtDate(l.start_date):"?"} ${l.volume_hl!=null?`· ${l.volume_hl} hl`:""} ${l.og?`· DiM ${sgToAbbr(+l.og)}`:""}${l.dit!=null?` · DiT ${sgToAbbr(+l.dit)}`:""}${l.dft!=null?` · DfT ${sgToAbbr(+l.dft)}`:""}${l.style?` · ${l.style}`:""}</div>`));
     item.appendChild(el("span",{class:`badge ${phaseClass(l.phase)}`}, l.phase));
     if (canWrite()) {
       // Avancer d'une phase : tout opérateur. Reculer vers une phase antérieure : superviseur seulement.
