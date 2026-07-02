@@ -224,7 +224,7 @@ async function refreshData() {
 function buildTabs() {
   const tabs = [];
   if (canWrite()) tabs.push(["saisie","Saisie"]);
-  tabs.push(["courbes","Courbes"], ["lots","Cuves & Brassins"]);
+  tabs.push(["courbes","Courbes"], ["lots","Cuves & Brassins"], ["archives","Archives"]);
   if (canWrite()) tabs.push(["import","Import"]);
   if (isSup()) tabs.push(["admin","Admin"]);
   const nav = $("#tabs"); nav.innerHTML = "";
@@ -242,6 +242,7 @@ function go(tab) {
   else if (tab==="courbes") viewCourbes(v);
   else if (tab==="lots") viewLots(v);
   else if (tab==="import") viewImport(v);
+  else if (tab==="archives") viewArchives(v);
   else if (tab==="admin") viewAdmin(v);
 }
 
@@ -372,18 +373,22 @@ function addPanel(getLotId) {
 
 /* ============================ COURBES ============================ */
 let CHART = null;
-function viewCourbes(root) {
-  if (!S.lots.length) { root.appendChild(emptyBox("Aucun lot","Créez un lot puis saisissez des relevés.")); return; }
+function viewCourbes(root){ lotCurves(root, S.lots.filter(l=>l.status==="Active"), "Aucun brassin en cours."); }
+function viewArchives(root){ lotCurves(root, S.lots.filter(l=>l.status!=="Active"), "Aucun brassin archivé."); }
+
+function lotCurves(root, lots, emptyMsg) {
+  if (!lots.length) { root.appendChild(emptyBox("Aucun brassin", emptyMsg)); return; }
 
   const head = el("div",{class:"card"});
   const sel = el("select");
-  S.lots.forEach(l=> sel.appendChild(el("option",{value:l.id},
-    `${l.fermenter_name} — ${l.beer_name}${l.batch_no?` (${l.batch_no})`:""}${l.status!=="Active"?" · terminé":""}`)));
+  lots.forEach(l=> sel.appendChild(el("option",{value:l.id},
+    `${l.fermenter_name} — ${l.beer_name}${l.status!=="Active"?` · terminé ${l.end_date?fmtDate(l.end_date):""}`:""}`)));
   const exportBtn = el("button",{class:"btn ghost"},"⬇ Export CSV");
   const top = el("div",{class:"flexb"});
   const selWrap = el("div",{style:"flex:1;min-width:220px"}); selWrap.append(lab("Lot", sel));
   top.append(selWrap, exportBtn); head.appendChild(top);
   const stats = el("div",{class:"stats"}); head.appendChild(stats);
+  const actions = el("div",{class:"flexb mt",style:"gap:8px;flex-wrap:wrap"}); head.appendChild(actions);
   root.appendChild(head);
 
   const chartCard = el("div",{class:"card mt"});
@@ -428,17 +433,44 @@ function viewCourbes(root) {
     } catch(e){ toast(e.message); meas=[]; adds=[]; }
     try { transfers = await q(db.from("transfers").select("*").eq("lot_id", lot.id).order("ts")); }
     catch(_){ transfers = []; }
-    renderStats(); draw(); renderHist(); renderAdds(); renderTransfers();
+    renderStats(); draw(); renderHist(); renderAdds(); renderTransfers(); renderActions();
+  }
+
+  function renderActions() {
+    actions.innerHTML = "";
+    if (!isSup() || !lot) return;
+    const edit = el("button",{class:"btn ghost sm"},"Éditer le brassin");
+    edit.addEventListener("click", ()=> editLot(lot));
+    actions.append(edit);
+    const tr = el("button",{class:"btn ghost sm"},"Transfert");
+    tr.addEventListener("click", ()=> transferLot(lot));
+    actions.append(tr);
+    if (lot.status !== "Active") {
+      const react = el("button",{class:"btn ghost sm"},"Réactiver");
+      react.addEventListener("click", async ()=>{ try{ await q(db.from("lots").update({status:"Active", end_date:null}).eq("id",lot.id)); toast("Brassin réactivé"); await refreshData(); go(S.tab); }catch(e){toast(e.message);} });
+      actions.append(react);
+    }
+    const del = el("button",{class:"btn danger sm"},"Supprimer le brassin");
+    del.addEventListener("click", async ()=>{ if(!confirm("Supprimer définitivement ce brassin et TOUTES ses données (relevés, ajouts, transferts) ?")) return; try{ await q(db.from("lots").delete().eq("id",lot.id)); toast("Brassin supprimé"); await refreshData(); go(S.tab); }catch(e){toast(e.message);} });
+    actions.append(del);
   }
 
   function renderAdds() {
     addsBody.innerHTML = "";
     if (!adds.length) { addsBody.appendChild(el("p",{class:"muted"},"Aucun ajout.")); return; }
     const t = el("table");
-    t.innerHTML = `<thead><tr><th>Nature</th><th>Désignation</th><th>N° de lot</th><th>Quantité</th><th>Date & heure</th></tr></thead>`;
+    t.innerHTML = `<thead><tr><th>Nature</th><th>Désignation</th><th>N° de lot</th><th>Quantité</th><th>Date & heure</th>${isSup()?"<th></th>":""}</tr></thead>`;
     const tb = el("tbody");
-    [...adds].reverse().forEach(a=> tb.appendChild(el("tr",{},
-      `<td>${a.type||""}</td><td>${a.label||""}</td><td>${a.batch_no||"—"}</td><td>${a.qty!=null?`${a.qty} ${a.unit||""}`:"—"}</td><td>${fmtDT(a.ts)}</td>`)));
+    [...adds].reverse().forEach(a=>{
+      const tr = el("tr",{}, `<td>${a.type||""}</td><td>${a.label||""}</td><td>${a.batch_no||"—"}</td><td>${a.qty!=null?`${a.qty} ${a.unit||""}`:"—"}</td><td>${fmtDT(a.ts)}</td>`);
+      if (isSup()) {
+        const td = el("td");
+        const e = el("button",{class:"btn ghost sm"},"éditer"); e.addEventListener("click", ()=> editAddition(a, load));
+        const b = el("button",{class:"btn danger sm",style:"margin-left:4px"},"suppr."); b.addEventListener("click", async ()=>{ if(confirm("Supprimer cet ajout ?")){ try{ await q(db.from("additions").delete().eq("id",a.id)); toast("Supprimé"); load(); }catch(e){toast(e.message);} }});
+        td.append(e,b); tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    });
     t.appendChild(tb); addsBody.appendChild(t);
   }
 
@@ -447,10 +479,18 @@ function viewCourbes(root) {
     if (!transfers.length) { transBody.appendChild(el("p",{class:"muted"},"Aucun transfert.")); return; }
     const nm = (id)=> (S.fermenters.find(f=>f.id==id)||{}).name || "?";
     const t = el("table");
-    t.innerHTML = `<thead><tr><th>Date & heure</th><th>De</th><th>Vers</th><th>Équipement</th><th>Volume</th><th>Par</th></tr></thead>`;
+    t.innerHTML = `<thead><tr><th>Date & heure</th><th>De</th><th>Vers</th><th>Équipement</th><th>Volume</th><th>EBC</th><th>Par</th>${isSup()?"<th></th>":""}</tr></thead>`;
     const tb = el("tbody");
-    [...transfers].reverse().forEach(x=> tb.appendChild(el("tr",{},
-      `<td>${fmtDT(x.ts)}</td><td>${nm(x.from_fermenter_id)}</td><td>${nm(x.to_fermenter_id)}</td><td>${x.equipment||"—"}</td><td>${x.volume_hl!=null?`${x.volume_hl} hl`:"—"}</td><td class="muted">${x.author||""}</td>`)));
+    [...transfers].reverse().forEach(x=>{
+      const tr = el("tr",{}, `<td>${fmtDT(x.ts)}</td><td>${nm(x.from_fermenter_id)}</td><td>${nm(x.to_fermenter_id)}</td><td>${x.equipment||"—"}</td><td>${x.volume_hl!=null?`${x.volume_hl} hl`:"—"}</td><td>${x.ebc!=null?x.ebc:"—"}</td><td class="muted">${x.author||""}</td>`);
+      if (isSup()) {
+        const td = el("td");
+        const e = el("button",{class:"btn ghost sm"},"éditer"); e.addEventListener("click", ()=> editTransfer(x, load));
+        const b = el("button",{class:"btn danger sm",style:"margin-left:4px"},"suppr."); b.addEventListener("click", async ()=>{ if(confirm("Supprimer ce transfert ?")){ try{ await q(db.from("transfers").delete().eq("id",x.id)); toast("Supprimé"); load(); }catch(e){toast(e.message);} }});
+        td.append(e,b); tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    });
     t.appendChild(tb); transBody.appendChild(t);
   }
 
@@ -552,9 +592,12 @@ function viewCourbes(root) {
     [...meas].reverse().forEach(m=>{
       const tr = el("tr",{},`<td>${fmtDT(m.ts)}</td><td>${m.phase||""}</td><td>${sgToAbbr(m.densite_sg)}</td><td>${m.densite_sg!=null?sgToPlato(+m.densite_sg).toFixed(1):"—"}</td><td>${m.ph??"—"}</td><td>${m.temp??"—"}</td><td>${m.pressure??"—"}</td><td class="muted">${m.author||""}</td><td class="muted">${m.note||""}</td>`);
       if (isSup()) {
-        const td = el("td"); const b = el("button",{class:"btn danger sm"},"suppr.");
+        const td = el("td");
+        const e = el("button",{class:"btn ghost sm"},"éditer");
+        e.addEventListener("click", ()=> editMeasurement(m, load));
+        const b = el("button",{class:"btn danger sm",style:"margin-left:4px"},"suppr.");
         b.addEventListener("click", async ()=>{ if(confirm("Supprimer ce relevé ?")){ try{ await q(db.from("measurements").delete().eq("id", m.id)); toast("Supprimé"); load(); }catch(e){toast(e.message);} }});
-        td.appendChild(b); tr.appendChild(td);
+        td.append(e, b); tr.appendChild(td);
       }
       tb.appendChild(tr);
     });
@@ -618,6 +661,76 @@ function addMarkersPlugin(markers) {
   };
 }
 
+/* ============================ ÉDITION DES ÉTAPES (superviseur) ============================ */
+function modal(title, build){
+  const ov = el("div",{class:"modal-ov"});
+  const box = el("div",{class:"modal-box"});
+  box.appendChild(el("h3",{style:"margin-top:0"}, title));
+  const body = el("div"); box.appendChild(body);
+  ov.appendChild(box); document.body.appendChild(ov);
+  const close = ()=> ov.remove();
+  ov.addEventListener("mousedown",(e)=>{ if(e.target===ov) close(); });
+  build(body, close);
+}
+function threeButtons(body, close, onSave, onDelete){
+  const save = el("button",{class:"btn primary mt"},"Enregistrer");
+  const del = el("button",{class:"btn danger mt",style:"margin-left:8px"},"Supprimer");
+  const cx = el("button",{class:"btn ghost mt",style:"margin-left:8px"},"Annuler");
+  body.append(save, del, cx);
+  cx.addEventListener("click", close);
+  save.addEventListener("click", onSave);
+  del.addEventListener("click", onDelete);
+}
+function editMeasurement(m, reload){
+  modal("Éditer le relevé", (body, close)=>{
+    const d = inp("date",(m.ts||"").slice(0,10));
+    const dens = inp("text", m.densite_sg!=null?sgToAbbr(+m.densite_sg):"","59");
+    const ph = inp("text", m.ph??"","pH"); const temp = inp("text", m.temp??"","°C");
+    const press = inp("text", m.pressure??"","bar"); const note = inp("text", m.note??"","note");
+    const r1 = el("div",{class:"row"}); r1.append(lab("Date",d), lab("Densité (59)",dens), lab("pH",ph));
+    const r2 = el("div",{class:"row"}); r2.append(lab("T° (°C)",temp), lab("Pression (bar)",press), lab("Note",note));
+    body.append(r1, r2);
+    threeButtons(body, close,
+      async ()=>{ try{ await q(db.from("measurements").update({ ts:(d.value||today())+"T12:00:00Z", date:d.value||null,
+        densite_sg: dens.value.trim()?parseDens(dens.value):null, ph:num(ph.value), temp:num(temp.value), pressure:num(press.value), note:note.value.trim()||null
+      }).eq("id",m.id)); close(); toast("Relevé modifié ✓"); reload(); }catch(e){ toast(e.message); } },
+      async ()=>{ if(!confirm("Supprimer ce relevé ?")) return; try{ await q(db.from("measurements").delete().eq("id",m.id)); close(); toast("Supprimé"); reload(); }catch(e){ toast(e.message); } });
+  });
+}
+function editAddition(a, reload){
+  modal("Éditer l'ajout", (body, close)=>{
+    const d = inp("date",(a.ts||"").slice(0,10));
+    const type = sels(ADD_TYPES, a.type); const label = inp("text", a.label??"","désignation");
+    const batch = inp("text", a.batch_no??"","N° de lot"); const qty = inp("text", a.qty??"","qté"); const unit = sels(UNITS, a.unit);
+    const r1 = el("div",{class:"row"}); r1.append(lab("Date",d), lab("Type",type), lab("Désignation",label));
+    const r2 = el("div",{class:"row"}); r2.append(lab("N° de lot",batch), lab("Quantité",qty), lab("Unité",unit));
+    body.append(r1, r2);
+    threeButtons(body, close,
+      async ()=>{ try{ await q(db.from("additions").update({ ts:(d.value||today())+"T12:00:00Z", date:d.value||null,
+        type:type.value, label:label.value.trim(), batch_no:batch.value.trim()||null, qty:num(qty.value), unit:unit.value
+      }).eq("id",a.id)); close(); toast("Ajout modifié ✓"); reload(); }catch(e){ toast(e.message); } },
+      async ()=>{ if(!confirm("Supprimer cet ajout ?")) return; try{ await q(db.from("additions").delete().eq("id",a.id)); close(); toast("Supprimé"); reload(); }catch(e){ toast(e.message); } });
+  });
+}
+function editTransfer(x, reload){
+  modal("Éditer le transfert", (body, close)=>{
+    const d = inp("date",(x.ts||"").slice(0,10));
+    const from = sels(S.fermenters.map(f=>[f.id,f.name]), x.from_fermenter_id);
+    const to = sels(S.fermenters.map(f=>[f.id,f.name]), x.to_fermenter_id);
+    const eq = sels([["Centrifugeuse","Centrifugeuse"],["Filtre double cartouche","Filtre double cartouche"],["Aucun","Aucun"]], x.equipment);
+    const vol = inp("text", x.volume_hl??"","hl");
+    const ebc = inp("text", x.ebc??"","EBC");
+    const r1 = el("div",{class:"row"}); r1.append(lab("Date",d), lab("De",from), lab("Vers",to));
+    const r2 = el("div",{class:"row"}); r2.append(lab("Équipement",eq), lab("Volume (hl)",vol), lab("EBC",ebc));
+    body.append(r1, r2);
+    threeButtons(body, close,
+      async ()=>{ try{ await q(db.from("transfers").update({ ts:(d.value||today())+"T12:00:00Z", date:d.value||null,
+        from_fermenter_id:Number(from.value), to_fermenter_id:Number(to.value), equipment:eq.value, volume_hl:num(vol.value), ebc:num(ebc.value)
+      }).eq("id",x.id)); close(); toast("Transfert modifié ✓"); reload(); }catch(e){ toast(e.message); } },
+      async ()=>{ if(!confirm("Supprimer ce transfert ?")) return; try{ await q(db.from("transfers").delete().eq("id",x.id)); close(); toast("Supprimé"); reload(); }catch(e){ toast(e.message); } });
+  });
+}
+
 /* ============================ ÉDITION D'UN LOT (superviseur) ============================ */
 function editLot(lot){
   const v = $("#view"); v.innerHTML = "";
@@ -646,10 +759,15 @@ function editLot(lot){
   cOg.addEventListener("input",()=>{ const sg=parseDens(cOg.value); ogHint.textContent = sg!=null?`= ${sg.toFixed(3)} · ≈ ${sgToPlato(sg).toFixed(1)} °P`:""; });
 
   const save = el("button",{class:"btn primary mt"},"Enregistrer les modifications");
+  const del = el("button",{class:"btn danger mt",style:"margin-left:8px"},"Supprimer le brassin");
   const cancel = el("button",{class:"btn ghost mt",style:"margin-left:8px"},"Annuler");
-  card.append(save, cancel); v.appendChild(card);
+  card.append(save, del, cancel); v.appendChild(card);
 
-  cancel.addEventListener("click", ()=> go("lots"));
+  cancel.addEventListener("click", ()=> go(S.tab));
+  del.addEventListener("click", async ()=>{
+    if(!confirm("Supprimer définitivement ce brassin et TOUTES ses données (relevés, ajouts, transferts) ?")) return;
+    try{ await q(db.from("lots").delete().eq("id",lot.id)); toast("Brassin supprimé"); await refreshData(); go(S.tab); }catch(e){ toast(e.message); }
+  });
   save.addEventListener("click", async ()=>{
     const beerName = beerSel.get();
     if (!beerName){ toast("Choisissez ou saisissez une bière"); return; }
@@ -659,7 +777,7 @@ function editLot(lot){
       await q(db.from("lots").update({
         fermenter_id: Number(fSel.value), beer_name: beerName, og: og, volume_hl: num(cVol.value),
         start_date: cDate.value, phase: phase.value }).eq("id", lot.id));
-      toast("Lot mis à jour ✓"); await refreshData(); go("lots");
+      toast("Lot mis à jour ✓"); await refreshData(); go(S.tab);
     }catch(e){ toast(e.message); }
   });
 }
@@ -667,24 +785,31 @@ function editLot(lot){
 /* ============================ TRANSFERT ENTRE FERMENTEURS ============================ */
 function transferLot(lot){
   const v = $("#view"); v.innerHTML = "";
+  const allowOccupied = lot.status !== "Active" && isSup();
   const card = el("div",{class:"card",style:"max-width:560px"});
   card.appendChild(el("h3",{}, `Transfert — ${lot.fermenter_name} · ${lot.beer_name}`));
-  card.appendChild(el("p",{class:"hint"}, "La bière — avec ses courbes et relevés — passe dans le fermenteur d'arrivée ; le fermenteur de départ est libéré."));
+  card.appendChild(el("p",{class:"hint"}, allowOccupied
+    ? "Bière clôturée : ce transfert reconstitue l'historique. Les cuves occupées sont proposées (aucune cuve n'est réellement libérée)."
+    : "La bière — avec ses courbes et relevés — passe dans le fermenteur d'arrivée ; le fermenteur de départ est libéré."));
 
   const occupied = new Set(S.lots.filter(l=>l.status==="Active").map(l=>l.fermenter_id));
   const dest = el("select");
   dest.appendChild(el("option",{value:""},"— choisir —"));
   S.fermenters.forEach(f=>{
-    if (f.id === lot.fermenter_id) return;   // pas la cuve de départ
-    if (occupied.has(f.id)) return;          // seulement des cuves libres
-    dest.appendChild(el("option",{value:f.id}, `${f.name}${f.volume_hl?` (${f.volume_hl} hl)`:""}`));
+    if (f.id === lot.fermenter_id) return;            // pas la cuve de départ
+    const isOcc = occupied.has(f.id);
+    if (isOcc && !allowOccupied) return;              // cuves libres seulement (sauf bière clôturée / superviseur)
+    dest.appendChild(el("option",{value:f.id}, `${f.name}${f.volume_hl?` (${f.volume_hl} hl)`:""}${isOcc?" — occupée":""}`));
   });
 
   const EQUIP = ["Centrifugeuse","Filtre double cartouche","Aucun"];
   const eqWrap = el("div",{class:"stack",style:"gap:6px;margin-top:4px"});
+  const ebc = inp("text","","EBC");
+  const ebcLab = lab("EBC après centrifugation (optionnel)", ebc); ebcLab.style.display = "none";
   EQUIP.forEach(e=>{
     const l = el("label",{style:"display:flex;align-items:center;gap:6px;font-size:14px;font-weight:400"});
     const rb = el("input"); rb.type = "radio"; rb.name = "equip"; rb.value = e;
+    rb.addEventListener("change", ()=>{ ebcLab.style.display = (rb.checked && rb.value==="Centrifugeuse") ? "" : "none"; });
     l.append(rb, document.createTextNode(e)); eqWrap.appendChild(l);
   });
   const vol = inp("text","","hl");
@@ -693,6 +818,7 @@ function transferLot(lot){
   card.appendChild(lab("Fermenteur d'arrivée", dest));
   card.appendChild(el("div",{style:"margin-top:10px;font-size:13px;color:var(--sub);font-weight:600"},"Équipement (obligatoire, un seul choix)"));
   card.appendChild(eqWrap);
+  card.appendChild(ebcLab);
   const row = el("div",{class:"row mt"}); row.style.gridTemplateColumns = "1fr 1fr";
   row.append(lab("Volume transféré (hl)", vol), lab("Date", dateT));
   card.appendChild(row);
@@ -701,7 +827,7 @@ function transferLot(lot){
   const cancel = el("button",{class:"btn ghost mt",style:"margin-left:8px"},"Annuler");
   card.append(ok, cancel); v.appendChild(card);
 
-  cancel.addEventListener("click", ()=> go("lots"));
+  cancel.addEventListener("click", ()=> go(S.tab));
   ok.addEventListener("click", async ()=>{
     const toId = Number(dest.value);
     if (!toId){ toast("Choisissez le fermenteur d'arrivée"); return; }
@@ -709,12 +835,13 @@ function transferLot(lot){
     if (!checked){ toast("Choisissez l'équipement (ou « Aucun »)"); return; }
     const vhl = num(vol.value);
     if (vhl==null){ toast("Le volume transféré est obligatoire"); return; }
+    const ebcVal = (checked.value==="Centrifugeuse" && ebc.value.trim()) ? num(ebc.value) : null;
     try{
       await q(db.from("transfers").insert({ lot_id:lot.id, from_fermenter_id:lot.fermenter_id,
-        to_fermenter_id:toId, equipment:checked.value, volume_hl:vhl,
+        to_fermenter_id:toId, equipment:checked.value, volume_hl:vhl, ebc:ebcVal,
         ts:(dateT.value||today())+"T12:00:00Z", date:dateT.value }));
       await q(db.from("lots").update({ fermenter_id: toId, volume_hl: vhl }).eq("id", lot.id));
-      toast("Transfert effectué ✓"); await refreshData(); go("lots");
+      toast("Transfert effectué ✓"); await refreshData(); go(S.tab);
     }catch(e){ toast(e.message); }
   });
 }
@@ -817,20 +944,6 @@ function viewLots(root) {
     ac.appendChild(item);
   });
   left.appendChild(ac);
-
-  const done = S.lots.filter(l=>l.status!=="Active");
-  if (done.length) {
-    const dc = el("div",{class:"card"});
-    dc.appendChild(el("h3",{},`Brassins terminés (${done.length})`));
-    done.forEach(l=>{
-      const row = el("div",{class:"flexb",style:"border-top:1px solid #f0efed;padding:7px 0;font-size:13px"});
-      row.appendChild(el("span",{},`${l.fermenter_name} — ${l.beer_name} <span class="muted">· ${l.start_date?fmtDate(l.start_date):""} → ${l.end_date?fmtDate(l.end_date):""}</span>`));
-      row.appendChild(el("span",{class:"spacer"}));
-      if (isSup()) { const e=el("button",{class:"btn ghost sm"},"Éditer"); e.addEventListener("click",()=> editLot(l)); row.appendChild(e); const b=el("button",{class:"btn ghost sm"},"Réactiver"); b.addEventListener("click",async()=>{ try{ await q(db.from("lots").update({status:"Active",end_date:null}).eq("id",l.id)); await refreshData(); go("lots"); }catch(e){toast(e.message);} }); row.appendChild(b); }
-      dc.appendChild(row);
-    });
-    left.appendChild(dc);
-  }
 
   const fc = el("div",{class:"card"});
   fc.appendChild(el("h3",{},`Fermenteurs (${S.fermenters.length})`));
