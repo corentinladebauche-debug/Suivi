@@ -1194,7 +1194,7 @@ function parseSheet(rows, lk){
   }
   return Object.values(out);
 }
-function normTxt(s){ return String(s==null?"":s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().trim().replace(/\s+/g," "); }
+function normTxt(s){ return String(s==null?"":s).normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/°/g,"").toLowerCase().trim().replace(/\s+/g," "); }
 function getSheet(wb, names){
   for (const n of names){ const hit = wb.SheetNames.find(s=> normTxt(s)===normTxt(n)); if (hit) return wb.Sheets[hit]; }
   return null;
@@ -1371,13 +1371,11 @@ function viewImport(root){
     if (!wsB){ summary.innerHTML = `<p class="err">Feuille « Brassin » introuvable. Téléchargez le modèle historique.</p>`; return; }
     const { meta, transfers } = parseBrassinSheet(sheetRows(wsB), lk);
     const readings = wsR ? parseSheet(sheetRows(wsR), lk) : [];
-    // regrouper les relevés par date (une bière = un brassin, quel que soit le fermenteur)
-    const byDate = {};
-    for (const m of readings){ const d=m.date; (byDate[d] ??= {date:d});
-      if (m.dens!=null) byDate[d].dens=m.dens; if (m.ph!=null) byDate[d].ph=m.ph;
-      if (m.temp!=null) byDate[d].temp=m.temp; if (m.press!=null) byDate[d].press=m.press; }
-    const measRows = Object.values(byDate).sort((a,b)=> a.date.localeCompare(b.date));
-    hist = { meta, transfers, measRows };
+    hist = { meta, transfers, readings };
+
+    const nDates = new Set(readings.map(r=>r.date)).size;
+    const froms = transfers.map(t=>t.from).filter(Boolean);
+    const split = froms.some((f,i)=> froms.indexOf(f)!==i);   // 2 transferts partant de la même cuve = répartition
 
     const errs = [];
     if (!meta.beer) errs.push("bière manquante");
@@ -1386,7 +1384,7 @@ function viewImport(root){
     const fmt = (d)=> d?fmtDate(d):"—";
     let html = `<p><strong>${meta.beer||"(bière ?)"}</strong>${meta.style?` · ${meta.style}`:""}${(meta.style==="Sour/fruits")?" 🍓":""} — cuve initiale <strong>${meta.initFerm||"?"}</strong></p>`;
     html += `<p class="muted">Brassage ${fmt(meta.start)} · 15°C ${fmt(meta.date15)} · Garde ${fmt(meta.dateGarde)} · Clôture ${fmt(meta.end)}${meta.volume!=null?` · ${meta.volume} hl`:""}${meta.dim!=null?` · DiM ${sgToAbbr(meta.dim)}`:""}${meta.dit!=null?` · DiT ${sgToAbbr(meta.dit)}`:""}${meta.dft!=null?` · DfT ${sgToAbbr(meta.dft)}`:""}</p>`;
-    html += `<p><strong>${transfers.length}</strong> transfert(s) · <strong>${measRows.length}</strong> relevé(s) à créer.</p>`;
+    html += `<p><strong>${transfers.length}</strong> transfert(s)${split?" · <strong>répartition détectée → 2 brassins</strong>":""} · <strong>${nDates}</strong> date(s) de relevé.</p>`;
     if (errs.length) html += `<p class="err">À compléter : ${errs.join(", ")}.</p>`;
     summary.innerHTML = html;
     importBtn.textContent = "Créer le brassin et importer";
@@ -1409,40 +1407,64 @@ function viewImport(root){
 
   async function runHist(){
     if (!isSup()) throw new Error("Import historique réservé aux superviseurs");
-    const { meta, transfers, measRows } = hist;
+    const { meta, transfers, readings } = hist;
     const fid = (name)=> (S.fermenters.find(f=>f.name===name)||{}).id || null;
     const initId = fid(meta.initFerm);
     if (!initId) throw new Error("fermenteur initial inconnu");
     const phase = meta.dateGarde ? "Garde" : (meta.date15 ? "15°C" : "Fermentation");
-    // 1) créer le brassin
-    const created = await q(db.from("lots").insert({
-      fermenter_id: initId, beer_name: meta.beer, style: meta.style || null,
+    const lotFields = {
+      beer_name: meta.beer, style: meta.style || null,
       og: meta.dim ?? null, dit: meta.dit ?? null, dft: meta.dft ?? null,
-      volume_hl: meta.volume ?? null, start_date: meta.start,
-      date_15c: meta.date15 || null, date_garde: meta.dateGarde || null,
+      start_date: meta.start, date_15c: meta.date15 || null, date_garde: meta.dateGarde || null,
       phase, status: meta.end ? "Terminé" : "Active", end_date: meta.end || null,
-      fruits: meta.style === "Sour/fruits" }).select("id").single());
-    const lotId = created.id;
-    // 2) transferts (déplacent le fermenteur courant du brassin)
-    let curFerm = initId, lastVol = meta.volume ?? null;
+      fruits: meta.style === "Sour/fruits" };
+
+    // 1) brassin principal
+    const main = await q(db.from("lots").insert({ ...lotFields, fermenter_id: initId, volume_hl: meta.volume ?? null }).select("id").single());
+    const mainId = main.id;
+
+    // 2) transferts : séquentiel = déplace le principal ; branche depuis une cuve déjà quittée = nouveau brassin (répartition)
+    const fermToLot = { [meta.initFerm]: mainId };
+    let curMain = meta.initFerm, mainVol = meta.volume ?? null;
+    const splitLots = []; let splitDate = null;
     for (const t of transfers){
-      const fromId = fid(t.from) || curFerm, toId = fid(t.to);
-      if (!toId) continue;
-      await q(db.from("transfers").insert({ lot_id: lotId, from_fermenter_id: fromId, to_fermenter_id: toId,
-        equipment: t.equipment || "Aucun", volume_hl: t.volume, ebc: t.ebc,
-        ts: (t.date||meta.start)+"T12:00:00Z", date: t.date || meta.start }));
-      curFerm = toId; if (t.volume!=null) lastVol = t.volume;
+      const toId = fid(t.to); if (!toId) continue;
+      const fromName = t.from || curMain; const fromId = fid(fromName) || fid(curMain);
+      if (fromName === curMain){
+        await q(db.from("transfers").insert({ lot_id: mainId, from_fermenter_id: fromId, to_fermenter_id: toId,
+          equipment: t.equipment || "Aucun", volume_hl: t.volume, ebc: t.ebc,
+          ts: (t.date||meta.start)+"T12:00:00Z", date: t.date || meta.start }));
+        fermToLot[t.to] = mainId; curMain = t.to; if (t.volume!=null) mainVol = t.volume;
+      } else {
+        const sp = await q(db.from("lots").insert({ ...lotFields, fermenter_id: toId, volume_hl: t.volume ?? null }).select("id").single());
+        await q(db.from("transfers").insert({ lot_id: sp.id, from_fermenter_id: fromId, to_fermenter_id: toId,
+          equipment: t.equipment || "Aucun", volume_hl: t.volume, ebc: t.ebc,
+          ts: (t.date||meta.start)+"T12:00:00Z", date: t.date || meta.start }));
+        fermToLot[t.to] = sp.id; splitLots.push(sp.id);
+        if (t.date && (!splitDate || t.date < splitDate)) splitDate = t.date;
+      }
     }
-    if (curFerm !== initId || lastVol !== (meta.volume ?? null))
-      await q(db.from("lots").update({ fermenter_id: curFerm, volume_hl: lastVol }).eq("id", lotId));
-    // 3) relevés (phase déduite des dates de transition)
+    const finalMainId = fid(curMain);
+    if (finalMainId !== initId || mainVol !== (meta.volume ?? null))
+      await q(db.from("lots").update({ fermenter_id: finalMainId, volume_hl: mainVol }).eq("id", mainId));
+
+    // 3) relevés routés par fermenteur ; le tronc commun (avant la répartition) est partagé par tous les brassins
     const phaseAt = (d)=> (meta.dateGarde && d>=meta.dateGarde) ? "Garde" : ((meta.date15 && d>=meta.date15) ? "15°C" : "Fermentation");
-    const rows = measRows.map(m=>({ lot_id: lotId, ts: m.date+"T12:00:00Z", date: m.date,
-      densite_sg: m.dens!=null ? parseDens(m.dens) : null,
-      ph: m.ph ?? null, temp: m.temp ?? null, pressure: m.press ?? null,
-      phase: phaseAt(m.date), operator: "Import historique" }));
+    const byLotDate = {};
+    const put = (lotId, r)=>{ const k=lotId+"||"+r.date; (byLotDate[k] ??= { lot_id:lotId, date:r.date });
+      if (r.dens!=null) byLotDate[k].dens=r.dens; if (r.ph!=null) byLotDate[k].ph=r.ph;
+      if (r.temp!=null) byLotDate[k].temp=r.temp; if (r.press!=null) byLotDate[k].press=r.press; };
+    for (const r of readings){
+      if (splitDate && r.date < splitDate){ put(mainId, r); for (const id of splitLots) put(id, r); }
+      else put(fermToLot[r.ferm] || mainId, r);
+    }
+    const rows = Object.values(byLotDate).map(m=>({ lot_id:m.lot_id, ts:m.date+"T12:00:00Z", date:m.date,
+      densite_sg: m.dens!=null?parseDens(m.dens):null, ph:m.ph??null, temp:m.temp??null, pressure:m.press??null,
+      phase: phaseAt(m.date), operator:"Import historique" }));
     for (let i=0;i<rows.length;i+=200) await q(db.from("measurements").insert(rows.slice(i,i+200)));
-    result.innerHTML = `<p class="ok">Brassin « ${meta.beer} » créé ✓ · ${transfers.length} transfert(s) · ${rows.length} relevé(s).</p>`;
+
+    const nLots = 1 + splitLots.length;
+    result.innerHTML = `<p class="ok">${nLots>1?`${nLots} brassins créés (répartition)`:`Brassin « ${meta.beer} » créé`} ✓ · ${transfers.length} transfert(s) · ${rows.length} relevé(s).</p>`;
     importBtn.classList.add("hidden"); toast("Brassin historique importé ✓");
   }
 }
