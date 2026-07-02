@@ -786,62 +786,113 @@ function editLot(lot){
 function transferLot(lot){
   const v = $("#view"); v.innerHTML = "";
   const allowOccupied = lot.status !== "Active" && isSup();
-  const card = el("div",{class:"card",style:"max-width:560px"});
+  const occupied = new Set(S.lots.filter(l=>l.status==="Active").map(l=>l.fermenter_id));
+  const card = el("div",{class:"card",style:"max-width:600px"});
   card.appendChild(el("h3",{}, `Transfert — ${lot.fermenter_name} · ${lot.beer_name}`));
   card.appendChild(el("p",{class:"hint"}, allowOccupied
     ? "Bière clôturée : ce transfert reconstitue l'historique. Les cuves occupées sont proposées (aucune cuve n'est réellement libérée)."
     : "La bière — avec ses courbes et relevés — passe dans le fermenteur d'arrivée ; le fermenteur de départ est libéré."));
 
-  const occupied = new Set(S.lots.filter(l=>l.status==="Active").map(l=>l.fermenter_id));
-  const dest = el("select");
-  dest.appendChild(el("option",{value:""},"— choisir —"));
-  S.fermenters.forEach(f=>{
-    if (f.id === lot.fermenter_id) return;            // pas la cuve de départ
-    const isOcc = occupied.has(f.id);
-    if (isOcc && !allowOccupied) return;              // cuves libres seulement (sauf bière clôturée / superviseur)
-    dest.appendChild(el("option",{value:f.id}, `${f.name}${f.volume_hl?` (${f.volume_hl} hl)`:""}${isOcc?" — occupée":""}`));
-  });
+  // Case : répartir vers 2 cuves
+  const splitLab = el("label",{style:"display:flex;align-items:center;gap:8px;margin:8px 0 2px;font-weight:600"});
+  const splitCb = el("input"); splitCb.type = "checkbox";
+  splitLab.append(splitCb, document.createTextNode("Répartir vers 2 cuves"));
+  card.appendChild(splitLab);
+  const splitHint = el("p",{class:"hint",style:"margin-top:0"},
+    "La bière est répartie dans deux fermenteurs : deux transferts distincts (équipement, EBC, volume, date chacun). Un second brassin, même bière et même date de brassage, est créé pour la 2ᵉ cuve.");
+  splitHint.style.display = "none";
+  card.appendChild(splitHint);
 
-  const EQUIP = ["Centrifugeuse","Filtre double cartouche","Aucun"];
-  const eqWrap = el("div",{class:"stack",style:"gap:6px;margin-top:4px"});
-  const ebc = inp("text","","EBC");
-  const ebcLab = lab("EBC après centrifugation (optionnel)", ebc); ebcLab.style.display = "none";
-  EQUIP.forEach(e=>{
-    const l = el("label",{style:"display:flex;align-items:center;gap:6px;font-size:14px;font-weight:400"});
-    const rb = el("input"); rb.type = "radio"; rb.name = "equip"; rb.value = e;
-    rb.addEventListener("change", ()=>{ ebcLab.style.display = (rb.checked && rb.value==="Centrifugeuse") ? "" : "none"; });
-    l.append(rb, document.createTextNode(e)); eqWrap.appendChild(l);
-  });
-  const vol = inp("text","","hl");
-  const dateT = inp("date", today());
+  function destBlock(){
+    const wrap = el("div",{style:"border:1px solid #eee;border-radius:10px;padding:12px;margin-top:8px"});
+    const dest = el("select"); dest.appendChild(el("option",{value:""},"— choisir —"));
+    S.fermenters.forEach(f=>{
+      if (f.id === lot.fermenter_id) return;
+      const isOcc = occupied.has(f.id);
+      if (isOcc && !allowOccupied) return;
+      dest.appendChild(el("option",{value:f.id}, `${f.name}${f.volume_hl?` (${f.volume_hl} hl)`:""}${isOcc?" — occupée":""}`));
+    });
+    const eqName = "eq_"+Math.random().toString(36).slice(2);
+    const ebc = inp("text","","EBC");
+    const ebcLab = lab("EBC après centrifugation (optionnel)", ebc); ebcLab.style.display = "none";
+    const eqWrap = el("div",{class:"stack",style:"gap:4px;margin-top:4px"});
+    ["Centrifugeuse","Filtre double cartouche","Aucun"].forEach(e=>{
+      const l = el("label",{style:"display:flex;align-items:center;gap:6px;font-size:14px;font-weight:400"});
+      const rb = el("input"); rb.type = "radio"; rb.name = eqName; rb.value = e;
+      rb.addEventListener("change", ()=>{ ebcLab.style.display = (rb.checked && rb.value==="Centrifugeuse") ? "" : "none"; });
+      l.append(rb, document.createTextNode(e)); eqWrap.appendChild(l);
+    });
+    const vol = inp("text","","hl"); const dateT = inp("date", today());
+    wrap.appendChild(lab("Fermenteur d'arrivée", dest));
+    wrap.appendChild(el("div",{style:"margin-top:8px;font-size:13px;color:var(--sub);font-weight:600"},"Équipement (obligatoire, un seul choix)"));
+    wrap.appendChild(eqWrap); wrap.appendChild(ebcLab);
+    const row = el("div",{class:"row mt"}); row.style.gridTemplateColumns = "1fr 1fr";
+    row.append(lab("Volume transféré (hl)", vol), lab("Date", dateT)); wrap.appendChild(row);
+    function read(){
+      const toId = Number(dest.value);
+      if (!toId) return {err:"Choisissez le fermenteur d'arrivée"};
+      const checked = eqWrap.querySelector(`input[name="${eqName}"]:checked`);
+      if (!checked) return {err:"Choisissez l'équipement (ou « Aucun »)"};
+      const vhl = num(vol.value);
+      if (vhl==null) return {err:"Le volume transféré est obligatoire"};
+      const ebcVal = (checked.value==="Centrifugeuse" && ebc.value.trim()) ? num(ebc.value) : null;
+      return {toId, equipment:checked.value, volume:vhl, ebc:ebcVal, date:dateT.value||today()};
+    }
+    return {node:wrap, read};
+  }
 
-  card.appendChild(lab("Fermenteur d'arrivée", dest));
-  card.appendChild(el("div",{style:"margin-top:10px;font-size:13px;color:var(--sub);font-weight:600"},"Équipement (obligatoire, un seul choix)"));
-  card.appendChild(eqWrap);
-  card.appendChild(ebcLab);
-  const row = el("div",{class:"row mt"}); row.style.gridTemplateColumns = "1fr 1fr";
-  row.append(lab("Volume transféré (hl)", vol), lab("Date", dateT));
-  card.appendChild(row);
+  const t1 = el("div",{style:"font-weight:600;margin-top:8px;display:none"},"Cuve 1");
+  const b1 = destBlock();
+  const t2 = el("div",{style:"font-weight:600;margin-top:12px;display:none"},"Cuve 2");
+  const b2 = destBlock(); b2.node.style.display = "none";
+  card.append(t1, b1.node, t2, b2.node);
+
+  splitCb.addEventListener("change", ()=>{
+    const on = splitCb.checked;
+    splitHint.style.display = on ? "" : "none";
+    t1.style.display = on ? "" : "none";
+    t2.style.display = on ? "" : "none";
+    b2.node.style.display = on ? "" : "none";
+  });
 
   const ok = el("button",{class:"btn primary mt"},"Valider le transfert");
   const cancel = el("button",{class:"btn ghost mt",style:"margin-left:8px"},"Annuler");
   card.append(ok, cancel); v.appendChild(card);
-
   cancel.addEventListener("click", ()=> go(S.tab));
+
+  async function doTransfer(lotId, fromId, r){
+    await q(db.from("transfers").insert({ lot_id:lotId, from_fermenter_id:fromId,
+      to_fermenter_id:r.toId, equipment:r.equipment, volume_hl:r.volume, ebc:r.ebc,
+      ts:r.date+"T12:00:00Z", date:r.date }));
+  }
+
   ok.addEventListener("click", async ()=>{
-    const toId = Number(dest.value);
-    if (!toId){ toast("Choisissez le fermenteur d'arrivée"); return; }
-    const checked = eqWrap.querySelector("input[name=equip]:checked");
-    if (!checked){ toast("Choisissez l'équipement (ou « Aucun »)"); return; }
-    const vhl = num(vol.value);
-    if (vhl==null){ toast("Le volume transféré est obligatoire"); return; }
-    const ebcVal = (checked.value==="Centrifugeuse" && ebc.value.trim()) ? num(ebc.value) : null;
+    const r1 = b1.read();
+    if (r1.err){ toast(r1.err); return; }
+
+    if (!splitCb.checked){
+      try{
+        await doTransfer(lot.id, lot.fermenter_id, r1);
+        await q(db.from("lots").update({ fermenter_id:r1.toId, volume_hl:r1.volume }).eq("id", lot.id));
+        toast("Transfert effectué ✓"); await refreshData(); go(S.tab);
+      }catch(e){ toast(e.message); }
+      return;
+    }
+
+    // Répartition vers 2 cuves
+    const r2 = b2.read();
+    if (r2.err){ toast("Cuve 2 : "+r2.err); return; }
+    if (r1.toId === r2.toId){ toast("Les deux cuves d'arrivée doivent être différentes"); return; }
     try{
-      await q(db.from("transfers").insert({ lot_id:lot.id, from_fermenter_id:lot.fermenter_id,
-        to_fermenter_id:toId, equipment:checked.value, volume_hl:vhl, ebc:ebcVal,
-        ts:(dateT.value||today())+"T12:00:00Z", date:dateT.value }));
-      await q(db.from("lots").update({ fermenter_id: toId, volume_hl: vhl }).eq("id", lot.id));
-      toast("Transfert effectué ✓"); await refreshData(); go(S.tab);
+      // 1) le brassin d'origine part vers la cuve 1
+      await doTransfer(lot.id, lot.fermenter_id, r1);
+      await q(db.from("lots").update({ fermenter_id:r1.toId, volume_hl:r1.volume }).eq("id", lot.id));
+      // 2) un second brassin (meme biere) est cree pour la cuve 2
+      const created = await q(db.from("lots").insert({ fermenter_id:r2.toId, beer_name:lot.beer_name,
+        og:lot.og, volume_hl:r2.volume, start_date:lot.start_date, phase:lot.phase,
+        status:lot.status, end_date:lot.end_date }).select("id").single());
+      await doTransfer(created.id, lot.fermenter_id, r2);
+      toast("Répartition vers 2 cuves effectuée ✓"); await refreshData(); go(S.tab);
     }catch(e){ toast(e.message); }
   });
 }
