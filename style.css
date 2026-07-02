@@ -88,3 +88,7 @@ td{padding:6px 8px 6px 0;border-top:1px solid #f0efed;font-variant-numeric:tabul
 a.link{color:var(--amber-dk);font-weight:600;text-decoration:none}
 .guest-sep{display:flex;align-items:center;gap:10px;color:var(--sub);font-size:12px;margin:2px 0}
 .guest-sep::before,.guest-sep::after{content:"";height:1px;background:var(--line);flex:1}
+
+/* Modale d'édition */
+.modal-ov{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px}
+.modal-box{background:#fff;border-radius:14px;padding:20px;max-width:600px;width:100%;max-height:90vh;overflow:auto;box-shadow:0 12px 44px rgba(0,0,0,.25)}
