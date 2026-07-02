@@ -1282,17 +1282,19 @@ function viewImport(root){
   card.appendChild(el("h3",{},"Import d'un classeur Excel"));
 
   let mode = "actif";
-  const modeWrap = el("div",{class:"mt",style:"background:#faf9f7;border:1px solid #eee;border-radius:10px;padding:10px 12px"});
-  modeWrap.appendChild(el("div",{style:"font-weight:600;font-size:13px;margin-bottom:4px"},"Type d'import"));
-  [["actif","Standard — relevés rattachés au brassin actif de chaque cuve (feuille « Relevés »)"],
-   ["hist","Historique — crée le brassin depuis la feuille « Brassin » (infos, phases, transferts) + ses relevés"]
-  ].forEach(([val,label])=>{
-    const l = el("label",{style:"display:flex;align-items:center;gap:6px;font-size:14px;font-weight:400;margin:2px 0"});
-    const rb = el("input"); rb.type="radio"; rb.name="impmode"; rb.value=val; if (val==="actif") rb.checked=true;
-    rb.addEventListener("change", ()=>{ if(rb.checked){ mode=val; updateHint(); if(lastFile) handleFile(lastFile); else { summary.innerHTML=""; result.innerHTML=""; importBtn.classList.add("hidden"); } } });
-    l.append(rb, document.createTextNode(label)); modeWrap.appendChild(l);
-  });
-  card.appendChild(modeWrap);
+  const modeOpts = [["actif","Standard — relevés rattachés au brassin actif de chaque cuve (feuille « Relevés »)"]];
+  if (isSup()) modeOpts.push(["hist","Historique — crée le brassin depuis la feuille « Brassin » (infos, phases, transferts) + ses relevés"]);
+  if (modeOpts.length > 1){
+    const modeWrap = el("div",{class:"mt",style:"background:#faf9f7;border:1px solid #eee;border-radius:10px;padding:10px 12px"});
+    modeWrap.appendChild(el("div",{style:"font-weight:600;font-size:13px;margin-bottom:4px"},"Type d'import"));
+    modeOpts.forEach(([val,label])=>{
+      const l = el("label",{style:"display:flex;align-items:center;gap:6px;font-size:14px;font-weight:400;margin:2px 0"});
+      const rb = el("input"); rb.type="radio"; rb.name="impmode"; rb.value=val; if (val==="actif") rb.checked=true;
+      rb.addEventListener("change", ()=>{ if(rb.checked){ mode=val; updateHint(); if(lastFile) handleFile(lastFile); else { summary.innerHTML=""; result.innerHTML=""; importBtn.classList.add("hidden"); } } });
+      l.append(rb, document.createTextNode(label)); modeWrap.appendChild(l);
+    });
+    card.appendChild(modeWrap);
+  }
 
   const hint = el("p",{class:"hint"});
   function updateHint(){
@@ -1406,6 +1408,7 @@ function viewImport(root){
   }
 
   async function runHist(){
+    if (!isSup()) throw new Error("Import historique réservé aux superviseurs");
     const { meta, transfers, measRows } = hist;
     const fid = (name)=> (S.fermenters.find(f=>f.name===name)||{}).id || null;
     const initId = fid(meta.initFerm);
