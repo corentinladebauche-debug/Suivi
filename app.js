@@ -1165,9 +1165,31 @@ function viewImport(root){
 
   const card = el("div",{class:"card",style:"max-width:780px"});
   card.appendChild(el("h3",{},"Import d'un classeur Excel"));
-  card.appendChild(el("p",{class:"hint"},
-    "Une colonne par fermenteur. Pour chaque date (colonne A, sur la 1ʳᵉ ligne du bloc), 4 lignes en colonne B : "+
-    "Pression, Température, Densité, pH. Densités en abrégé (59 = 1.059). Chaque relevé est rattaché au lot actif du fermenteur."));
+
+  let mode = "actif";
+  if (isSup()){
+    const modeWrap = el("div",{class:"mt",style:"background:#faf9f7;border:1px solid #eee;border-radius:10px;padding:10px 12px"});
+    modeWrap.appendChild(el("div",{style:"font-weight:600;font-size:13px;margin-bottom:4px"},"Type d'import"));
+    [["actif","Standard — rattache au brassin actif de chaque cuve"],
+     ["hist","Historique — rattache uniquement à un brassin clôturé (période départ→fin contenant la date)"]
+    ].forEach(([val,label])=>{
+      const l = el("label",{style:"display:flex;align-items:center;gap:6px;font-size:14px;font-weight:400;margin:2px 0"});
+      const rb = el("input"); rb.type="radio"; rb.name="impmode"; rb.value=val; if (val==="actif") rb.checked=true;
+      rb.addEventListener("change", ()=>{ if(rb.checked){ mode=val; updateHint(); recompute(); } });
+      l.append(rb, document.createTextNode(label)); modeWrap.appendChild(l);
+    });
+    card.appendChild(modeWrap);
+  }
+
+  const hint = el("p",{class:"hint"});
+  function updateHint(){
+    hint.textContent = "Une colonne par fermenteur. Pour chaque date (colonne A, sur la 1ʳᵉ ligne du bloc), 4 lignes en colonne B : Pression, Température, Densité, pH. Densités en abrégé (59 = 1.059). " +
+      (mode==="hist"
+        ? "Chaque relevé est rattaché au brassin CLÔTURÉ de la cuve dont la période (départ→fin) contient la date ; sinon la valeur est ignorée."
+        : "Chaque relevé est rattaché au brassin ACTIF de la cuve.");
+  }
+  updateHint();
+  card.appendChild(hint);
 
   const tmplBtn = el("button",{class:"btn ghost"},"⬇ Télécharger le modèle");
   tmplBtn.addEventListener("click", downloadTemplate);
@@ -1183,31 +1205,37 @@ function viewImport(root){
   root.appendChild(card);
 
   let toInsert = [];
+  let lastParsed = null;
 
-  file.addEventListener("change", async ()=>{
+  async function recompute(){
     summary.innerHTML=""; result.innerHTML=""; importBtn.classList.add("hidden"); toInsert=[];
-    const f = file.files[0]; if (!f) return;
-    let parsed;
-    try {
-      const buf = await f.arrayBuffer();
-      const wb = XLSX.read(buf, { type:"array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, blankrows:false });
-      parsed = parseSheet(rows, buildLookup(S.fermenters));
-    } catch(e){ summary.innerHTML = `<p class="err">Lecture impossible : ${e.message}</p>`; return; }
-    if (!parsed.length){ summary.innerHTML = `<p class="err">Aucun relevé détecté — vérifiez le format (entête « Date », libellés des mesures).</p>`; return; }
+    if (!lastParsed || !lastParsed.length) return;
+    const parsed = lastParsed;
+    const opLabel = mode==="hist" ? "Import historique" : "Import xlsx";
 
     const activeByFerm = {}; S.lots.filter(l=>l.status==="Active").forEach(l=> activeByFerm[l.fermenter_name]=l);
+    const termByFerm = {}; S.lots.filter(l=>l.status!=="Active").forEach(l=> (termByFerm[l.fermenter_name] ??= []).push(l));
+    function matchLot(ferm, date){
+      if (mode!=="hist") return activeByFerm[ferm] || null;
+      const cands = (termByFerm[ferm]||[]).filter(l=>{
+        const s = l.start_date || "0000-01-01", e = l.end_date || "9999-12-31";
+        return s <= date && date <= e;
+      });
+      if (!cands.length) return null;
+      cands.sort((a,b)=> (b.start_date||"").localeCompare(a.start_date||""));
+      return cands[0];
+    }
+
     const noLot = new Set(); const lotIds = new Set(); const candidates = [];
     for (const m of parsed){
-      const lot = activeByFerm[m.ferm];
+      const lot = matchLot(m.ferm, m.date);
       if (!lot){ noLot.add(m.ferm); continue; }
       lotIds.add(lot.id); candidates.push({ m, lot });
     }
     let already = new Set();
     try {
       if (lotIds.size){
-        const ex = await q(db.from("measurements").select("lot_id,date").in("lot_id",[...lotIds]).eq("operator","Import xlsx"));
+        const ex = await q(db.from("measurements").select("lot_id,date").in("lot_id",[...lotIds]).eq("operator",opLabel));
         ex.forEach(r => already.add(r.lot_id+"||"+r.date));
       }
     } catch(_){}
@@ -1218,15 +1246,29 @@ function viewImport(root){
         lot_id: lot.id, ts: m.date+"T12:00:00Z", date: m.date,
         densite_sg: m.dens!=null ? parseDens(m.dens) : null,
         ph: m.ph ?? null, temp: m.temp ?? null, pressure: m.press ?? null,
-        phase: lot.phase, operator: "Import xlsx" });
+        phase: lot.phase, operator: opLabel });
     }
     const dates = [...new Set(parsed.map(m=>m.date))].sort();
     const ferms = [...new Set(candidates.map(c=>c.lot.fermenter_name))].sort((a,b)=> fermRank(a)-fermRank(b));
     let html = `<p><strong>${parsed.length}</strong> relevés lus${dates.length?` · du ${fmtDate(dates[0])} au ${fmtDate(dates[dates.length-1])}`:""}.</p>`;
-    html += `<p><strong>${toInsert.length}</strong> à importer sur ${ferms.length} fermenteur(s) actif(s)${dupes?` · ${dupes} déjà importés (ignorés)`:""}.</p>`;
-    if (noLot.size) html += `<p class="err">Sans lot actif, donc ignorés : ${[...noLot].sort((a,b)=>fermRank(a)-fermRank(b)).join(", ")}</p>`;
+    html += `<p><strong>${toInsert.length}</strong> à importer sur ${ferms.length} ${mode==="hist"?"brassin(s) clôturé(s)":"fermenteur(s) actif(s)"}${dupes?` · ${dupes} déjà importés (ignorés)`:""}.</p>`;
+    if (noLot.size) html += `<p class="err">${mode==="hist"?"Sans brassin clôturé correspondant à la date":"Sans lot actif"}, donc ignorés : ${[...noLot].sort((a,b)=>fermRank(a)-fermRank(b)).join(", ")}</p>`;
     summary.innerHTML = html;
     if (toInsert.length) importBtn.classList.remove("hidden");
+  }
+
+  file.addEventListener("change", async ()=>{
+    lastParsed = null; summary.innerHTML=""; result.innerHTML=""; importBtn.classList.add("hidden"); toInsert=[];
+    const f = file.files[0]; if (!f) return;
+    try {
+      const buf = await f.arrayBuffer();
+      const wb = XLSX.read(buf, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, blankrows:false });
+      lastParsed = parseSheet(rows, buildLookup(S.fermenters));
+    } catch(e){ summary.innerHTML = `<p class="err">Lecture impossible : ${e.message}</p>`; return; }
+    if (!lastParsed.length){ summary.innerHTML = `<p class="err">Aucun relevé détecté — vérifiez le format (entête « Date », libellés des mesures).</p>`; return; }
+    await recompute();
   });
 
   importBtn.addEventListener("click", async ()=>{
