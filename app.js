@@ -1377,8 +1377,10 @@ function downloadTemplate(mode){
       ["","","","","",""],["","","","","",""],["","","","","",""],
       ["",""],
       ["Conditionnement",""],
+      ["Aide-mémoire formats :  " + PACK_FORMATS.map(f=> `${f} = ${PACK_LABELS[f]}`).join("   ·   "), ""],
+      ["Une ligne par conditionnement (plusieurs du même format à des dates différentes sont possibles).", ""],
       ["Format","Date","Volume (hl)"],
-      ...PACK_FORMATS.map(f=> [f, "", ""]),
+      ...Array.from({length: 10}, ()=> ["","",""]),
     ];
     const wsB = XLSX.utils.aoa_to_sheet(info);
     wsB["!cols"] = [{wch:20},{wch:16},{wch:12},{wch:20},{wch:12},{wch:8}];
@@ -1416,7 +1418,7 @@ function viewImport(root){
   const hint = el("p",{class:"hint"});
   function updateHint(){
     hint.textContent = mode==="hist"
-      ? "Feuille 1 « Brassin » : infos (bière, style, fermenteur initial, volumes, DiM/DiT/DfT, date de brassage, mise à 15°C, mise en Garde, clôture) , tableau « Transferts » et « Conditionnement » (dates + volumes par format, pour les pertes). Feuille 2 « Relevés » : Pression / Température / Densité / pH par date, dans les cuves traversées. Le brassin (clôturé) et son historique sont créés automatiquement."
+      ? "Feuille 1 « Brassin » : infos (bière, style, fermenteur initial, volumes, DiM/DiT/DfT, date de brassage, mise à 15°C, mise en Garde, clôture), tableau « Transferts » et « Conditionnement » (liste libre, une ligne par condi, codes format c33/c44/c50/b33/b75/kk/inox — voir aide-mémoire dans le fichier ; max 4). Feuille 2 « Relevés » : Pression / Température / Densité / pH par date, dans les cuves traversées. Le brassin (clôturé) et son historique sont créés automatiquement."
       : "Feuille « Relevés » : une colonne par fermenteur ; pour chaque date, 4 lignes (Pression, Température, Densité, pH). Densités en abrégé (59 = 1.059). Chaque relevé est rattaché au brassin ACTIF de la cuve.";
   }
   updateHint();
