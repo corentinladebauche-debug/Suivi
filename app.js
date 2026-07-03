@@ -1336,9 +1336,10 @@ function parseBrassinSheet(rows, lk){
       if (a==="format") continue; // entête du tableau
       const fmt = a; const date = xlDateStr(r[1]);
       const vol = (r[2]!=null && r[2]!=="") ? parseFloat(String(r[2]).replace(",",".")) : null;
+      const ferm = resolveFerm(r[3], lk);   // fermenteur d'où part le conditionnement (répartition)
       if (!PACK_FORMATS.includes(fmt)) continue;
       if (date==null && vol==null) continue; // format non renseigné
-      packagings.push({ format: fmt, date, volume: vol });
+      packagings.push({ format: fmt, date, volume: vol, ferm });
       continue;
     }
     if (!a) continue;
@@ -1378,9 +1379,9 @@ function downloadTemplate(mode){
       ["",""],
       ["Conditionnement",""],
       ["Aide-mémoire formats :  " + PACK_FORMATS.map(f=> `${f} = ${PACK_LABELS[f]}`).join("   ·   "), ""],
-      ["Une ligne par conditionnement (plusieurs du même format à des dates différentes sont possibles).", ""],
-      ["Format","Date","Volume (hl)"],
-      ...Array.from({length: 10}, ()=> ["","",""]),
+      ["Une ligne par conditionnement (plusieurs du même format à des dates différentes sont possibles). En cas de répartition, indiquez le fermenteur d'où part le conditionnement.", ""],
+      ["Format","Date","Volume (hl)","Fermenteur"],
+      ...Array.from({length: 10}, ()=> ["","","",""]),
     ];
     const wsB = XLSX.utils.aoa_to_sheet(info);
     wsB["!cols"] = [{wch:20},{wch:16},{wch:12},{wch:20},{wch:12},{wch:8}];
@@ -1418,7 +1419,7 @@ function viewImport(root){
   const hint = el("p",{class:"hint"});
   function updateHint(){
     hint.textContent = mode==="hist"
-      ? "Feuille 1 « Brassin » : infos (bière, style, fermenteur initial, volumes, DiM/DiT/DfT, date de brassage, mise à 15°C, mise en Garde, clôture), tableau « Transferts » et « Conditionnement » (liste libre, une ligne par condi, codes format c33/c44/c50/b33/b75/kk/inox — voir aide-mémoire dans le fichier ; max 4). Feuille 2 « Relevés » : Pression / Température / Densité / pH par date, dans les cuves traversées. Le brassin (clôturé) et son historique sont créés automatiquement."
+      ? "Feuille 1 « Brassin » : infos (bière, style, fermenteur initial, volumes, DiM/DiT/DfT, date de brassage, mise à 15°C, mise en Garde, clôture), tableau « Transferts » et « Conditionnement » (liste libre, une ligne par condi : format c33/c44/c50/b33/b75/kk/inox, date, volume, et le fermenteur d'où part le condi en cas de répartition — voir aide-mémoire dans le fichier ; max 4 par brassin). Feuille 2 « Relevés » : Pression / Température / Densité / pH par date, dans les cuves traversées. Le brassin (clôturé) et son historique sont créés automatiquement."
       : "Feuille « Relevés » : une colonne par fermenteur ; pour chaque date, 4 lignes (Pression, Température, Densité, pH). Densités en abrégé (59 = 1.059). Chaque relevé est rattaché au brassin ACTIF de la cuve.";
   }
   updateHint();
@@ -1490,24 +1491,23 @@ function viewImport(root){
     if (!wsB){ summary.innerHTML = `<p class="err">Feuille « Brassin » introuvable. Téléchargez le modèle historique.</p>`; return; }
     const { meta, transfers, packagings } = parseBrassinSheet(sheetRows(wsB), lk);
     const readings = wsR ? parseSheet(sheetRows(wsR), lk) : [];
-    const packCapped = packagings.slice(0, 4);
-    hist = { meta, transfers, packagings: packCapped, readings };
+    hist = { meta, transfers, packagings, readings };
 
     const nDates = new Set(readings.map(r=>r.date)).size;
     const froms = transfers.map(t=>t.from).filter(Boolean);
     const split = froms.some((f,i)=> froms.indexOf(f)!==i);   // 2 transferts partant de la même cuve = répartition
-    const condTot = packCapped.reduce((s,p)=> s + (p.volume!=null?p.volume:0), 0);
+    const condTot = packagings.reduce((s,p)=> s + (p.volume!=null?p.volume:0), 0);
 
     const errs = [];
     if (!meta.beer) errs.push("bière manquante");
     if (!meta.initFerm) errs.push("fermenteur initial manquant/inconnu");
     if (!meta.start) errs.push("date de brassage manquante");
-    if (meta.end && packCapped.length === 0) errs.push("au moins un conditionnement est requis pour une bière clôturée");
+    if (meta.end && packagings.length === 0) errs.push("au moins un conditionnement est requis pour une bière clôturée");
     const fmt = (d)=> d?fmtDate(d):"—";
     let html = `<p><strong>${meta.beer||"(bière ?)"}</strong>${meta.style?` · ${meta.style}`:""}${(meta.style==="Sour/fruits")?" 🍓":""} — cuve initiale <strong>${meta.initFerm||"?"}</strong></p>`;
     html += `<p class="muted">Brassage ${fmt(meta.start)} · 15°C ${fmt(meta.date15)} · Garde ${fmt(meta.dateGarde)} · Clôture ${fmt(meta.end)}${meta.volume!=null?` · ${meta.volume} hl`:""}${meta.dim!=null?` · DiM ${sgToAbbr(meta.dim)}`:""}${meta.dit!=null?` · DiT ${sgToAbbr(meta.dit)}`:""}${meta.dft!=null?` · DfT ${sgToAbbr(meta.dft)}`:""}</p>`;
     html += `<p><strong>${transfers.length}</strong> transfert(s)${split?" · <strong>répartition détectée → 2 brassins</strong>":""} · <strong>${nDates}</strong> date(s) de relevé.</p>`;
-    if (packCapped.length) html += `<p><strong>${packCapped.length}</strong> conditionnement(s)${packagings.length>4?" (max 4 — surplus ignoré)":""} · ${condTot.toFixed(1)} hl${meta.volume!=null?` · pertes ${(meta.volume-condTot).toFixed(1)} hl`:""}.</p>`;
+    if (packagings.length) html += `<p><strong>${packagings.length}</strong> conditionnement(s) · ${condTot.toFixed(1)} hl${meta.volume!=null?` · pertes ${(meta.volume-condTot).toFixed(1)} hl`:""} <span class="muted">(max 4 par brassin ; le surplus par cuve est ignoré)</span>.</p>`;
     if (errs.length) html += `<p class="err">À compléter : ${errs.join(", ")}.</p>`;
     summary.innerHTML = html;
     importBtn.textContent = "Créer le brassin et importer";
@@ -1586,10 +1586,17 @@ function viewImport(root){
       phase: phaseAt(m.date), operator:"Import historique" }));
     for (let i=0;i<rows.length;i+=200) await q(db.from("measurements").insert(rows.slice(i,i+200)));
 
-    // 4) conditionnements (rattachés au brassin principal)
+    // 4) conditionnements : routés vers le brassin du fermenteur indiqué (défaut : principal), max 4 par brassin
     const { packagings } = hist;
     if (packagings && packagings.length){
-      const pk = packagings.map(p=>({ lot_id: mainId, format: p.format, date: p.date || meta.end || null, volume_hl: p.volume }));
+      const byLot = {};
+      for (const p of packagings){
+        const lotId = (p.ferm && fermToLot[p.ferm]) ? fermToLot[p.ferm] : mainId;
+        (byLot[lotId] ??= []).push(p);
+      }
+      const pk = [];
+      for (const [lotId, arr] of Object.entries(byLot))
+        arr.slice(0,4).forEach(p=> pk.push({ lot_id: Number(lotId), format: p.format, date: p.date || meta.end || null, volume_hl: p.volume }));
       for (let i=0;i<pk.length;i+=200) await q(db.from("packagings").insert(pk.slice(i,i+200)));
     }
 
