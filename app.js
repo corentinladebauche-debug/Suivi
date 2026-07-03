@@ -98,6 +98,10 @@ const RECIPES = [
   {name:'Red Tears', style:'Sour/fruits', dit:1.06, dft:1.018}
 ];
 const STYLES = ["Lager","IPA","NEIPA","Belge","Noir","Sour/fruits"];
+// Formats de conditionnement (packaging)
+const PACK_FORMATS = ["c33","c44","c50","b33","b75","kk","inox"];
+const PACK_LABELS = { c33:"Canette 33cl", c44:"Canette 44cl", c50:"Canette 50cl", b33:"Bouteille 33cl", b75:"Bouteille 75cl", kk:"Keykeg", inox:"Fût inox" };
+const packLabel = (f)=> PACK_LABELS[f] || f;
 // Icône fruits : bières avec fruits OU de style Sour/fruits (permanentes comme éphémères)
 const hasFruits = (l)=> !!(l && (l.fruits || l.style === "Sour/fruits"));
 const fruitIcon = (l)=> hasFruits(l) ? " 🍓" : "";
@@ -255,8 +259,9 @@ async function refreshData() {
   S.lots = lotsRaw.map(l => ({
     ...l,
     fermenter_name: l.fermenter?.name,
-    volume_hl: l.fermenter?.volume_hl,
+    fermenter_volume_hl: l.fermenter?.volume_hl,   // capacité nominale de la cuve
     site: l.fermenter?.site,
+    // NB : volume_hl reste celui du lot (volume réel de la bière, mis à jour aux transferts)
   })).sort((a, b) => {
     const aa = a.status === "Active", ba = b.status === "Active";
     if (aa !== ba) return aa ? -1 : 1;
@@ -421,20 +426,43 @@ function addPanel(getLotId) {
 
 /* ============================ COURBES ============================ */
 let CHART = null;
-function viewCourbes(root){ lotCurves(root, S.lots.filter(l=>l.status==="Active"), "Aucun brassin en cours."); }
-function viewArchives(root){ lotCurves(root, S.lots.filter(l=>l.status!=="Active"), "Aucun brassin archivé."); }
+function viewCourbes(root){ lotCurves(root, S.lots.filter(l=>l.status==="Active"), "Aucun brassin en cours.", false); }
+function viewArchives(root){ lotCurves(root, S.lots.filter(l=>l.status!=="Active"), "Aucun brassin archivé.", true); }
 
-function lotCurves(root, lots, emptyMsg) {
+function lotCurves(root, lots, emptyMsg, byRecipe) {
   if (!lots.length) { root.appendChild(emptyBox("Aucun brassin", emptyMsg)); return; }
 
   const head = el("div",{class:"card"});
   const sel = el("select");
-  lots.forEach(l=> sel.appendChild(el("option",{value:l.id},
-    `${l.fermenter_name} — ${l.beer_name}${fruitIcon(l)}${l.status!=="Active"?` · terminé ${l.end_date?fmtDate(l.end_date):""}`:""}`)));
   const exportBtn = el("button",{class:"btn ghost"},"⬇ Export CSV");
   const top = el("div",{class:"flexb"});
-  const selWrap = el("div",{style:"flex:1;min-width:220px"}); selWrap.append(lab("Lot", sel));
-  top.append(selWrap, exportBtn); head.appendChild(top);
+
+  if (byRecipe){
+    const recipeOf = (l)=> RECIPES.find(r=>r.name===l.beer_name) ? l.beer_name : "Éphémères";
+    const groups = {}; lots.forEach(l=>{ const g=recipeOf(l); (groups[g] ??= []).push(l); });
+    const recipeNames = RECIPES.map(r=>r.name).filter(n=>groups[n]);
+    if (groups["Éphémères"]) recipeNames.push("Éphémères");
+    const recipeSel = el("select");
+    recipeNames.forEach(n=> recipeSel.appendChild(el("option",{value:n}, `${n} (${groups[n].length})`)));
+    const fillLots = ()=>{
+      sel.innerHTML = "";
+      (groups[recipeSel.value]||[]).slice()
+        .sort((a,b)=> (b.end_date||"").localeCompare(a.end_date||""))
+        .forEach(l=> sel.appendChild(el("option",{value:l.id},
+          `${l.fermenter_name}${fruitIcon(l)} · ${l.start_date?fmtDate(l.start_date):"?"} → ${l.end_date?fmtDate(l.end_date):"?"}`)));
+    };
+    fillLots();
+    recipeSel.addEventListener("change", ()=>{ fillLots(); load(); });
+    const rWrap = el("div",{style:"flex:1;min-width:170px"}); rWrap.append(lab("Recette", recipeSel));
+    const sWrap = el("div",{style:"flex:1;min-width:200px"}); sWrap.append(lab("Brassin", sel));
+    top.append(rWrap, sWrap, exportBtn);
+  } else {
+    lots.forEach(l=> sel.appendChild(el("option",{value:l.id},
+      `${l.fermenter_name} — ${l.beer_name}${fruitIcon(l)}${l.status!=="Active"?` · terminé ${l.end_date?fmtDate(l.end_date):""}`:""}`)));
+    const selWrap = el("div",{style:"flex:1;min-width:220px"}); selWrap.append(lab("Lot", sel));
+    top.append(selWrap, exportBtn);
+  }
+  head.appendChild(top);
   const stats = el("div",{class:"stats"}); head.appendChild(stats);
   const actions = el("div",{class:"flexb mt",style:"gap:8px;flex-wrap:wrap"}); head.appendChild(actions);
   root.appendChild(head);
@@ -469,7 +497,15 @@ function lotCurves(root, lots, emptyMsg) {
   const transBody = el("div",{class:"scroll"}); transCard.appendChild(transBody);
   root.appendChild(transCard);
 
-  let meas = [], adds = [], transfers = [], lot = null;
+  const packCard = el("div",{class:"card mt"});
+  const packHead = el("div",{class:"flexb"});
+  packHead.append(el("h3",{style:"margin:0"},"Conditionnement"));
+  const packAdd = el("button",{class:"btn ghost sm"},"+ Conditionnement");
+  packHead.append(packAdd); packCard.appendChild(packHead);
+  const packBody = el("div",{class:"scroll mt"}); packCard.appendChild(packBody);
+  root.appendChild(packCard);
+
+  let meas = [], adds = [], transfers = [], packagings = [], lot = null;
 
   async function load() {
     lot = S.lots.find(l=>l.id==sel.value);
@@ -481,8 +517,13 @@ function lotCurves(root, lots, emptyMsg) {
     } catch(e){ toast(e.message); meas=[]; adds=[]; }
     try { transfers = await q(db.from("transfers").select("*").eq("lot_id", lot.id).order("ts")); }
     catch(_){ transfers = []; }
-    renderStats(); draw(); renderHist(); renderAdds(); renderTransfers(); renderActions();
+    try { packagings = await q(db.from("packagings").select("*").eq("lot_id", lot.id).order("date")); }
+    catch(_){ packagings = []; }
+    packAdd.classList.toggle("hidden", !canWrite() || packagings.length >= 4);
+    renderStats(); draw(); renderHist(); renderAdds(); renderTransfers(); renderPackagings(); renderActions();
   }
+
+  packAdd.addEventListener("click", ()=> lot && editPackaging({ lot_id: lot.id, date: (lot.end_date||today()) }, load));
 
   function renderActions() {
     actions.innerHTML = "";
@@ -542,6 +583,33 @@ function lotCurves(root, lots, emptyMsg) {
     t.appendChild(tb); transBody.appendChild(t);
   }
 
+  function packagedTotal(){ return packagings.reduce((s,p)=> s + (p.volume_hl!=null?+p.volume_hl:0), 0); }
+
+  function renderPackagings() {
+    packBody.innerHTML = "";
+    if (!packagings.length) { packBody.appendChild(el("p",{class:"muted"},"Aucun conditionnement.")); return; }
+    const t = el("table");
+    t.innerHTML = `<thead><tr><th>Format</th><th>Date</th><th>Volume</th>${isSup()?"<th></th>":""}</tr></thead>`;
+    const tb = el("tbody");
+    [...packagings].sort((a,b)=>(a.date||"").localeCompare(b.date||"")).forEach(p=>{
+      const tr = el("tr",{}, `<td>${packLabel(p.format)}</td><td>${p.date?fmtDate(p.date):"—"}</td><td>${p.volume_hl!=null?`${p.volume_hl} hl`:"—"}</td>`);
+      if (isSup()) {
+        const td = el("td");
+        const e = el("button",{class:"btn ghost sm"},"éditer"); e.addEventListener("click", ()=> editPackaging(p, load));
+        const b = el("button",{class:"btn danger sm",style:"margin-left:4px"},"suppr."); b.addEventListener("click", async ()=>{ if(confirm("Supprimer ce conditionnement ?")){ try{ await q(db.from("packagings").delete().eq("id",p.id)); toast("Supprimé"); load(); }catch(e){toast(e.message);} }});
+        td.append(e,b); tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb); packBody.appendChild(t);
+    const cond = packagedTotal();
+    const vol = lot && lot.volume_hl!=null ? +lot.volume_hl : null;
+    const loss = (vol!=null) ? vol - cond : null;
+    const lossPct = (vol!=null && vol>0) ? (loss/vol*100) : null;
+    packBody.appendChild(el("p",{class:"mt",style:"font-weight:600"},
+      `Conditionné : ${cond.toFixed(1)} hl${vol!=null?` · en cuve : ${vol} hl · pertes : ${loss.toFixed(1)} hl${lossPct!=null?` (${lossPct.toFixed(1)} %)`:""}`:""}`));
+  }
+
   function renderStats() {
     const withD = meas.filter(m=>m.densite_sg!=null);
     const last = withD[withD.length-1];
@@ -553,6 +621,7 @@ function lotCurves(root, lots, emptyMsg) {
     add("DiT", lot.dit!=null?sgToAbbr(+lot.dit):"—");
     add("DfT", lot.dft!=null?sgToAbbr(+lot.dft):"—");
     add("Volume courant", lot.volume_hl!=null?`${lot.volume_hl} hl`:"—");
+    if (packagings.length) add("Conditionné", `${packagedTotal().toFixed(1)} hl`);
     add("Densité actuelle", last?sgToAbbr(+last.densite_sg):"—");
     add("Atténuation app.", att!=null?att.toFixed(0)+" %":"—");
     add("Style", (lot.style||"—") + (lot.fruits?" · fruits":""));
@@ -809,6 +878,31 @@ function editTransfer(x, reload){
   });
 }
 
+function editPackaging(p, reload){
+  const isNew = !p.id;
+  modal(isNew?"Ajouter un conditionnement":"Éditer le conditionnement", (body, close)=>{
+    const fmt = sels(PACK_FORMATS.map(f=>[f, packLabel(f)]), p.format || PACK_FORMATS[0]);
+    const d = inp("date", (p.date||"").slice(0,10) || today());
+    const vol = inp("text", p.volume_hl??"", "hl");
+    const r1 = el("div",{class:"row"}); r1.append(lab("Format", fmt), lab("Date", d), lab("Volume (hl)", vol));
+    body.append(r1);
+    const save = el("button",{class:"btn primary mt"},"Enregistrer");
+    const del = isNew ? null : el("button",{class:"btn danger mt",style:"margin-left:8px"},"Supprimer");
+    const cx = el("button",{class:"btn ghost mt",style:"margin-left:8px"},"Annuler");
+    body.append(save); if (del) body.append(del); body.append(cx);
+    cx.addEventListener("click", close);
+    save.addEventListener("click", async ()=>{
+      const payload = { lot_id: p.lot_id, format: fmt.value, date: d.value||null, volume_hl: num(vol.value) };
+      try{
+        if (isNew) await q(db.from("packagings").insert(payload));
+        else await q(db.from("packagings").update(payload).eq("id", p.id));
+        close(); toast("Conditionnement enregistré ✓"); reload();
+      }catch(e){ toast(e.message); }
+    });
+    if (del) del.addEventListener("click", async ()=>{ if(!confirm("Supprimer ce conditionnement ?")) return; try{ await q(db.from("packagings").delete().eq("id",p.id)); close(); toast("Supprimé"); reload(); }catch(e){ toast(e.message); } });
+  });
+}
+
 /* ============================ ÉDITION D'UN LOT (superviseur) ============================ */
 function editLot(lot){
   const v = $("#view"); v.innerHTML = "";
@@ -865,6 +959,11 @@ function editLot(lot){
     if (!beer.name){ toast("Choisissez ou saisissez une bière"); return; }
     const og = parseDens(cOg.value);
     if (og==null){ toast("La DiM est obligatoire"); return; }
+    if (statusSel.value==="Terminé" && lot.status!=="Terminé"){
+      let nCond = 0;
+      try { nCond = (await q(db.from("packagings").select("id").eq("lot_id", lot.id))).length; } catch(_){}
+      if (nCond === 0){ toast("Ajoutez au moins un conditionnement avant de clôturer ce brassin."); return; }
+    }
     try{
       await q(db.from("lots").update({
         fermenter_id: Number(fSel.value), beer_name: beer.name, og: og, volume_hl: num(cVol.value),
@@ -1099,7 +1198,10 @@ function viewLots(root) {
       tr.addEventListener("click", ()=> transferLot(l));
       item.append(tr);
       const close = el("button",{class:"btn ghost sm"},"Clôturer");
-      close.addEventListener("click", ()=>{
+      close.addEventListener("click", async ()=>{
+        let nCond = 0;
+        try { nCond = (await q(db.from("packagings").select("id").eq("lot_id", l.id))).length; } catch(_){}
+        if (nCond === 0){ toast("Ajoutez au moins un conditionnement avant de clôturer (onglet Courbes → Conditionnement)."); return; }
         modal("Clôturer le brassin", (body, done)=>{
           body.appendChild(el("p",{class:"hint"},`${l.fermenter_name} — ${l.beer_name}. Date de clôture = date de conditionnement.`));
           const d = inp("date", today());
@@ -1214,13 +1316,14 @@ function parseBrassinSheet(rows, lk){
     "date mise en garde":"dateGarde","date de garde":"dateGarde","date de mise en garde":"dateGarde",
     "date de cloture":"end","date de conditionnement":"end","date de fin":"end",
   };
-  const meta = {}; const transfers = []; let inTrans = false;
+  const meta = {}; const transfers = []; const packagings = []; let section = null;
   for (let i=0;i<rows.length;i++){
     const r = rows[i]; if (!r) continue;
-    const a = normTxt(r[0]); if (!a) continue;
-    if (a==="transferts"){ inTrans = true; continue; }
-    if (inTrans){
-      if (a==="de" || a==="depart") continue; // ligne d'entête du tableau
+    const a = normTxt(r[0]);
+    if (a==="transferts"){ section = "trans"; continue; }
+    if (a==="conditionnement"){ section = "pack"; continue; }
+    if (section==="trans"){
+      if (a==="de" || a==="depart") continue; // entête du tableau
       const from = resolveFerm(r[0], lk), to = resolveFerm(r[1], lk), date = xlDateStr(r[2]);
       if (!from && !to && !date) continue;
       transfers.push({ from, to, date,
@@ -1229,6 +1332,16 @@ function parseBrassinSheet(rows, lk){
         ebc: (r[5]!=null && r[5]!=="") ? parseFloat(String(r[5]).replace(",",".")) : null });
       continue;
     }
+    if (section==="pack"){
+      if (a==="format") continue; // entête du tableau
+      const fmt = a; const date = xlDateStr(r[1]);
+      const vol = (r[2]!=null && r[2]!=="") ? parseFloat(String(r[2]).replace(",",".")) : null;
+      if (!PACK_FORMATS.includes(fmt)) continue;
+      if (date==null && vol==null) continue; // format non renseigné
+      packagings.push({ format: fmt, date, volume: vol });
+      continue;
+    }
+    if (!a) continue;
     const key = LABELS[a]; if (!key) continue;
     let v = r[1];
     if (["start","date15","dateGarde","end"].includes(key)) v = xlDateStr(v);
@@ -1238,7 +1351,7 @@ function parseBrassinSheet(rows, lk){
     else v = (v==null) ? null : String(v).trim();
     meta[key] = v;
   }
-  return { meta, transfers };
+  return { meta, transfers, packagings };
 }
 function releveSheetAOA(){
   const header = ["Date","Mesure", ...FERM_ORDER];
@@ -1262,6 +1375,10 @@ function downloadTemplate(mode){
       ["Transferts",""],
       ["De","Vers","Date","Équipement","Volume (hl)","EBC"],
       ["","","","","",""],["","","","","",""],["","","","","",""],
+      ["",""],
+      ["Conditionnement",""],
+      ["Format","Date","Volume (hl)"],
+      ...PACK_FORMATS.map(f=> [f, "", ""]),
     ];
     const wsB = XLSX.utils.aoa_to_sheet(info);
     wsB["!cols"] = [{wch:20},{wch:16},{wch:12},{wch:20},{wch:12},{wch:8}];
@@ -1299,7 +1416,7 @@ function viewImport(root){
   const hint = el("p",{class:"hint"});
   function updateHint(){
     hint.textContent = mode==="hist"
-      ? "Feuille 1 « Brassin » : infos (bière, style, fermenteur initial, volumes, DiM/DiT/DfT, date de brassage, mise à 15°C, mise en Garde, clôture) et tableau « Transferts ». Feuille 2 « Relevés » : Pression / Température / Densité / pH par date, dans les cuves traversées. Le brassin (clôturé) et son historique sont créés automatiquement."
+      ? "Feuille 1 « Brassin » : infos (bière, style, fermenteur initial, volumes, DiM/DiT/DfT, date de brassage, mise à 15°C, mise en Garde, clôture) , tableau « Transferts » et « Conditionnement » (dates + volumes par format, pour les pertes). Feuille 2 « Relevés » : Pression / Température / Densité / pH par date, dans les cuves traversées. Le brassin (clôturé) et son historique sont créés automatiquement."
       : "Feuille « Relevés » : une colonne par fermenteur ; pour chaque date, 4 lignes (Pression, Température, Densité, pH). Densités en abrégé (59 = 1.059). Chaque relevé est rattaché au brassin ACTIF de la cuve.";
   }
   updateHint();
@@ -1369,22 +1486,26 @@ function viewImport(root){
     const wsB = getSheet(wb, ["Brassin","Brassins"]);
     const wsR = getSheet(wb, ["Relevés","Releves"]);
     if (!wsB){ summary.innerHTML = `<p class="err">Feuille « Brassin » introuvable. Téléchargez le modèle historique.</p>`; return; }
-    const { meta, transfers } = parseBrassinSheet(sheetRows(wsB), lk);
+    const { meta, transfers, packagings } = parseBrassinSheet(sheetRows(wsB), lk);
     const readings = wsR ? parseSheet(sheetRows(wsR), lk) : [];
-    hist = { meta, transfers, readings };
+    const packCapped = packagings.slice(0, 4);
+    hist = { meta, transfers, packagings: packCapped, readings };
 
     const nDates = new Set(readings.map(r=>r.date)).size;
     const froms = transfers.map(t=>t.from).filter(Boolean);
     const split = froms.some((f,i)=> froms.indexOf(f)!==i);   // 2 transferts partant de la même cuve = répartition
+    const condTot = packCapped.reduce((s,p)=> s + (p.volume!=null?p.volume:0), 0);
 
     const errs = [];
     if (!meta.beer) errs.push("bière manquante");
     if (!meta.initFerm) errs.push("fermenteur initial manquant/inconnu");
     if (!meta.start) errs.push("date de brassage manquante");
+    if (meta.end && packCapped.length === 0) errs.push("au moins un conditionnement est requis pour une bière clôturée");
     const fmt = (d)=> d?fmtDate(d):"—";
     let html = `<p><strong>${meta.beer||"(bière ?)"}</strong>${meta.style?` · ${meta.style}`:""}${(meta.style==="Sour/fruits")?" 🍓":""} — cuve initiale <strong>${meta.initFerm||"?"}</strong></p>`;
     html += `<p class="muted">Brassage ${fmt(meta.start)} · 15°C ${fmt(meta.date15)} · Garde ${fmt(meta.dateGarde)} · Clôture ${fmt(meta.end)}${meta.volume!=null?` · ${meta.volume} hl`:""}${meta.dim!=null?` · DiM ${sgToAbbr(meta.dim)}`:""}${meta.dit!=null?` · DiT ${sgToAbbr(meta.dit)}`:""}${meta.dft!=null?` · DfT ${sgToAbbr(meta.dft)}`:""}</p>`;
     html += `<p><strong>${transfers.length}</strong> transfert(s)${split?" · <strong>répartition détectée → 2 brassins</strong>":""} · <strong>${nDates}</strong> date(s) de relevé.</p>`;
+    if (packCapped.length) html += `<p><strong>${packCapped.length}</strong> conditionnement(s)${packagings.length>4?" (max 4 — surplus ignoré)":""} · ${condTot.toFixed(1)} hl${meta.volume!=null?` · pertes ${(meta.volume-condTot).toFixed(1)} hl`:""}.</p>`;
     if (errs.length) html += `<p class="err">À compléter : ${errs.join(", ")}.</p>`;
     summary.innerHTML = html;
     importBtn.textContent = "Créer le brassin et importer";
@@ -1463,8 +1584,15 @@ function viewImport(root){
       phase: phaseAt(m.date), operator:"Import historique" }));
     for (let i=0;i<rows.length;i+=200) await q(db.from("measurements").insert(rows.slice(i,i+200)));
 
+    // 4) conditionnements (rattachés au brassin principal)
+    const { packagings } = hist;
+    if (packagings && packagings.length){
+      const pk = packagings.map(p=>({ lot_id: mainId, format: p.format, date: p.date || meta.end || null, volume_hl: p.volume }));
+      for (let i=0;i<pk.length;i+=200) await q(db.from("packagings").insert(pk.slice(i,i+200)));
+    }
+
     const nLots = 1 + splitLots.length;
-    result.innerHTML = `<p class="ok">${nLots>1?`${nLots} brassins créés (répartition)`:`Brassin « ${meta.beer} » créé`} ✓ · ${transfers.length} transfert(s) · ${rows.length} relevé(s).</p>`;
+    result.innerHTML = `<p class="ok">${nLots>1?`${nLots} brassins créés (répartition)`:`Brassin « ${meta.beer} » créé`} ✓ · ${transfers.length} transfert(s) · ${rows.length} relevé(s)${packagings&&packagings.length?` · ${packagings.length} conditionnement(s)`:""}.</p>`;
     importBtn.classList.add("hidden"); toast("Brassin historique importé ✓");
   }
 }
