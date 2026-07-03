@@ -479,7 +479,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   ch.appendChild(seg); chartCard.appendChild(ch);
   const wrap = el("div",{class:"chart-wrap mt"}); const canvas = el("canvas");
   wrap.appendChild(canvas); chartCard.appendChild(wrap);
-  chartCard.appendChild(el("p",{class:"hint"},"Densité à gauche (◆ = DiM · × = DiT · ligne pointillée = DfT) · série à droite · traits verts = ajouts (dry hop, fruits, sucres…)"));
+  chartCard.appendChild(el("p",{class:"hint"},"Densité à gauche (◆ DiM · × DiT · ligne pointillée DfT) · série à droite. Repères verticaux : vert = ajouts · violet = transferts · sarcelle = phases (15°C, Garde) · rose = conditionnements."));
   root.appendChild(chartCard);
 
   const histCard = el("div",{class:"card mt"});
@@ -643,6 +643,14 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     const markers = adds.map(a=>({x:new Date(a.ts).getTime(), label:a.label}))
       .concat(transfers.map(t=>({ x:new Date(t.ts).getTime(),
         label:`→ ${(S.fermenters.find(f=>f.id==t.to_fermenter_id)||{}).name||"?"}`, color:"#9333ea" })));
+    // Repères de phase et de conditionnement
+    if (lot.date_15c)   markers.push({ x:new Date(lot.date_15c+"T12:00:00Z").getTime(),   label:"15°C",  color:"#0d9488" });
+    if (lot.date_garde) markers.push({ x:new Date(lot.date_garde+"T12:00:00Z").getTime(), label:"Garde", color:"#0d9488" });
+    packagings.forEach(p=>{ if (p.date) markers.push({ x:new Date(p.date+"T12:00:00Z").getTime(), label:`condi ${p.format}`, color:"#db2777" }); });
+    // Étendre l'axe X pour englober les repères (transferts, garde, conditionnements) au-delà des relevés
+    const allX = [...dens.map(p=>p.x), ...sec.map(p=>p.x), ...markers.map(m=>m.x)].filter(v=>Number.isFinite(v));
+    let xMin, xMax;
+    if (allX.length){ xMin = Math.min(...allX); xMax = Math.max(...allX); const pad = Math.max((xMax-xMin)*0.05, 12*3600*1000); xMin -= pad; xMax += pad; }
 
     // Axe densité : 0 -> 60 (abr.). Monte jusqu'à la DiM si DiM > 60. S'étend si une mesure sort.
     const ogSg = lot.og ? +lot.og : null;
@@ -689,7 +697,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
         responsive:true, maintainAspectRatio:false, parsing:true,
         interaction:{mode:"nearest",intersect:false},
         scales:{
-          x:{ type:"linear", ticks:{ callback:(v)=>fmtDate(new Date(v).toISOString()), maxRotation:0, font:{size:11} } },
+          x:{ type:"linear", min:xMin, max:xMax, ticks:{ callback:(v)=>fmtDate(new Date(v).toISOString()), maxRotation:0, font:{size:11} } },
           d:{ position:"left", min:dMin, max:dMax,
               ticks:{ callback:(v)=>sgToAbbr(v), stepSize:0.010, font:{size:11} },
               title:{display:true,text:"Densité (abr.)",font:{size:11}} },
