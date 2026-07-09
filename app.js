@@ -764,6 +764,20 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     if (lot.og && startT && (!densPts.length || densPts[0].x>startT)) densPts.unshift({x:startT, y:+sgToAbbr(+lot.og)});
     const phPts = meas.filter(m=>m.ph!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m.ph}));
     const bg = { id:"bg", beforeDraw:(c)=>{ const cx=c.ctx; cx.save(); cx.globalCompositeOperation="destination-over"; cx.fillStyle="#ffffff"; cx.fillRect(0,0,c.width,c.height); cx.restore(); } };
+    const dlabels = { id:"dlabels", afterDatasetsDraw:(c)=>{
+      const cx = c.ctx;
+      c.data.datasets.forEach((ds,di)=>{
+        const m = c.getDatasetMeta(di); if (m.hidden) return;
+        cx.save(); cx.font = "10px system-ui"; cx.fillStyle = ds.borderColor; cx.textAlign = "center";
+        cx.textBaseline = di===0 ? "bottom" : "top";
+        m.data.forEach((pt,i)=>{
+          const v = ds.data[i] && ds.data[i].y; if (v==null) return;
+          const txt = di===0 ? String(Math.round(v)) : (+v).toFixed(2);
+          cx.fillText(txt, pt.x, pt.y + (di===0 ? -5 : 6));
+        });
+        cx.restore();
+      });
+    }};
     const ch = new Chart(canvas.getContext("2d"), {
       type:"line",
       data:{ datasets:[
@@ -777,7 +791,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
           d:{ position:"left", title:{display:true, text:"Densité (abr.)"} },
           p:{ position:"right", title:{display:true, text:"pH"}, grid:{drawOnChartArea:false}, min:3, max:5.5 },
         } },
-      plugins:[bg]
+      plugins:[bg, dlabels]
     });
     await new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r)));
     const png = canvas.toDataURL("image/png");
@@ -806,25 +820,60 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
         m.ph??null, m.temp??null, m.pressure??null, m.operator||"", m.note||"" ]));
       ws.columns.forEach(c=> c.width = 14);
 
-      if (adds.length){
-        const wa = wb.addWorksheet("Ajouts");
-        wa.addRow(["Date","Type","Désignation","N° lot","Quantité","Unité","Note"]).font = { bold:true };
-        adds.forEach(a=> wa.addRow([fmtDate(a.ts), a.type||"", a.label||"", a.batch_no||"", a.qty??null, a.unit||"", a.note||""]));
-        wa.columns.forEach(c=> c.width = 14);
-      }
-      if (packagings.length){
-        const wp = wb.addWorksheet("Conditionnement");
-        wp.addRow(["Format","Date","Volume (hl)"]).font = { bold:true };
-        packagings.forEach(p=> wp.addRow([packLabel(p.format), p.date||"", p.volume_hl??null]));
-        const cond = packagedTotal(); const vol = lot.volume_hl!=null?+lot.volume_hl:null;
-        wp.addRow([]); wp.addRow(["Total conditionné (hl)", cond.toFixed(1)]);
-        if (vol!=null){ wp.addRow(["En cuve (hl)", vol]); wp.addRow(["Pertes (hl)", (vol-cond).toFixed(1)]); }
-        wp.columns.forEach(c=> c.width = 18);
-      }
+      // ---- Feuille « Fiche » (reproduction du modèle, pré-remplie) ----
+      const F = wb.addWorksheet("Fiche");
+      const bold = { bold:true };
+      const set = (addr, val, style)=>{ const c = F.getCell(addr); c.value = (val===null||val===undefined)?"":val; if(style) c.font = style; return c; };
+      const abr = (sg)=> sg!=null ? sgToAbbr(+sg) : "";
 
-      const wg = wb.addWorksheet("Graphique");
+      F.mergeCells("A1:N1");
+      set("A1","SUIVI FERMENTATIONS",{bold:true,size:16}); F.getCell("A1").alignment = { horizontal:"center" };
+
+      set("A3","Bière :",bold);            set("C3", lot.beer_name||"");
+      set("I3","Date de brassage :",bold); set("L3", lot.start_date||"");
+      set("A4","Fermenteur :",bold);       set("C4", lot.fermenter_name||"");
+      set("I4","Volume :",bold);           set("L4", lot.volume_hl!=null?`${lot.volume_hl} hl`:"");
+      set("A5","Style :",bold);            set("C5", (lot.style||"")+(hasFruits(lot)?" (fruits)":""));
+
+      const byFmt = {}; packagings.forEach(p=>{ byFmt[p.format]=(byFmt[p.format]||0)+(p.volume_hl!=null?+p.volume_hl:0); });
+      set("A7","Conditionnement :",bold);
+      set("C7","Canette 33"); set("D7", byFmt.c33||""); set("E7","44"); set("F7", byFmt.c44||""); set("G7","50"); set("H7", byFmt.c50||"");
+      set("A8","Bouteille 33"); set("B8", byFmt.b33||""); set("C8","75"); set("D8", byFmt.b75||"");
+      set("E8","Fût inox"); set("F8", byFmt.inox||""); set("G8","Keykeg"); set("H8", byFmt.kk||"");
+      const cond = packagedTotal(); const vol = lot.volume_hl!=null?+lot.volume_hl:null;
+      set("J7","Total conditionné :",bold); set("L7", `${cond.toFixed(1)} hl`);
+      if (vol!=null){ set("J8","Pertes :",bold); set("L8", `${(vol-cond).toFixed(1)} hl`); }
+
+      // Graphe densité + pH (image) dans la zone de graphe
       const imgId = wb.addImage({ base64: png.split(",")[1], extension:"png" });
-      wg.addImage(imgId, { tl:{col:0, row:0}, ext:{ width:1000, height:460 } });
+      F.addImage(imgId, { tl:{col:0, row:9}, ext:{ width:770, height:355 } });
+
+      const lastMeas = meas.filter(m=>m.densite_sg!=null).slice(-1)[0];
+      set("A29","Densité Initiale Théorique :",bold); set("E29", abr(lot.dit));
+      set("H29","Densité Finale Théorique :",bold);   set("L29", abr(lot.dft));
+      set("A30","Densité Initiale Obtenue :",bold);   set("E30", abr(lot.og));
+      set("H30","Densité Finale Obtenue :",bold);     set("L30", lastMeas?abr(lastMeas.densite_sg):"");
+      set("A31","Mise à 15° le :",bold);              set("E31", lot.date_15c||"");
+      set("H31","Mise en garde le :",bold);           set("L31", lot.date_garde||"");
+      set("A32","Clôture le :",bold);                 set("E32", lot.end_date||"");
+
+      set("A34","Ajouts :",bold);
+      let rr = 35;
+      if (adds.length) adds.forEach(a=>{ set(`B${rr}`, `${fmtDate(a.ts)} — ${a.type||""} ${a.label||""} ${a.qty!=null?(a.qty+(a.unit||"")):""}`.replace(/\s+/g," ").trim()); rr++; });
+      else { set("B35","—"); rr = 36; }
+
+      rr += 1;
+      const centri = transfers.find(t=> (t.equipment||"").toLowerCase().includes("centrifug"));
+      set(`A${rr}`,"Centrifugeuse :",bold); set(`C${rr}`, centri?"oui":"non");
+      set(`E${rr}`,"Vol. centrifugé :",bold); set(`G${rr}`, centri&&centri.volume_hl!=null?`${centri.volume_hl} hl`:"");
+      set(`I${rr}`,"EBC approx :",bold); set(`L${rr}`, centri&&centri.ebc!=null?centri.ebc:"");
+      rr += 1;
+      const dests = transfers.map(t=> (S.fermenters.find(f=>f.id==t.to_fermenter_id)||{}).name).filter(Boolean);
+      set(`A${rr}`,"Transfert vers :",bold); set(`C${rr}`, dests.join(", ")||"—");
+      rr += 2;
+      set(`A${rr}`,"Autres / Observations :",bold);
+
+      F.getColumn(1).width = 22; F.getColumn(9).width = 18;
 
       const buf = await wb.xlsx.writeBuffer();
       const blob = new Blob([buf], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
