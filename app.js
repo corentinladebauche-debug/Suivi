@@ -435,6 +435,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   const head = el("div",{class:"card"});
   const sel = el("select");
   const exportBtn = el("button",{class:"btn ghost"},"⬇ Export CSV");
+  const exportXlsxBtn = el("button",{class:"btn ghost"},"⬇ Export XLSX");
   const top = el("div",{class:"flexb"});
 
   if (byRecipe){
@@ -455,12 +456,12 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     recipeSel.addEventListener("change", ()=>{ fillLots(); load(); });
     const rWrap = el("div",{style:"flex:1;min-width:170px"}); rWrap.append(lab("Recette", recipeSel));
     const sWrap = el("div",{style:"flex:1;min-width:200px"}); sWrap.append(lab("Brassin", sel));
-    top.append(rWrap, sWrap, exportBtn);
+    top.append(rWrap, sWrap, exportBtn, exportXlsxBtn);
   } else {
     lots.forEach(l=> sel.appendChild(el("option",{value:l.id},
       `${l.fermenter_name} — ${l.beer_name}${fruitIcon(l)}${l.status!=="Active"?` · terminé ${l.end_date?fmtDate(l.end_date):""}`:""}`)));
     const selWrap = el("div",{style:"flex:1;min-width:220px"}); selWrap.append(lab("Lot", sel));
-    top.append(selWrap, exportBtn);
+    top.append(selWrap, exportBtn, exportXlsxBtn);
   }
   head.appendChild(top);
   const stats = el("div",{class:"stats"}); head.appendChild(stats);
@@ -754,6 +755,86 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     a.click(); URL.revokeObjectURL(url);
   }
   exportBtn.addEventListener("click", ()=>{ if(meas.length) exportCSV(); else toast("Aucun relevé à exporter"); });
+
+  async function chartPNG(){
+    const canvas = document.createElement("canvas");
+    canvas.width = 1000; canvas.height = 460;
+    const startT = lot.start_date ? new Date(lot.start_date+"T12:00:00Z").getTime() : null;
+    const densPts = meas.filter(m=>m.densite_sg!=null).map(m=>({x:new Date(m.ts).getTime(), y:+sgToAbbr(+m.densite_sg)}));
+    if (lot.og && startT && (!densPts.length || densPts[0].x>startT)) densPts.unshift({x:startT, y:+sgToAbbr(+lot.og)});
+    const phPts = meas.filter(m=>m.ph!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m.ph}));
+    const bg = { id:"bg", beforeDraw:(c)=>{ const cx=c.ctx; cx.save(); cx.globalCompositeOperation="destination-over"; cx.fillStyle="#ffffff"; cx.fillRect(0,0,c.width,c.height); cx.restore(); } };
+    const ch = new Chart(canvas.getContext("2d"), {
+      type:"line",
+      data:{ datasets:[
+        { label:"Densité (abr.)", data:densPts, yAxisID:"d", borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2.5, tension:.25, pointRadius:3 },
+        { label:"pH", data:phPts, yAxisID:"p", borderColor:"#2563eb", backgroundColor:"#2563eb", borderWidth:2, tension:.25, pointRadius:2.5 },
+      ]},
+      options:{ animation:false, responsive:false,
+        plugins:{ legend:{display:true}, title:{ display:true, text:`${lot.fermenter_name||""} — ${lot.beer_name||""}` } },
+        scales:{
+          x:{ type:"linear", ticks:{ callback:(v)=>fmtDate(new Date(v).toISOString()), maxRotation:0, font:{size:11} } },
+          d:{ position:"left", title:{display:true, text:"Densité (abr.)"} },
+          p:{ position:"right", title:{display:true, text:"pH"}, grid:{drawOnChartArea:false}, min:3, max:5.5 },
+        } },
+      plugins:[bg]
+    });
+    await new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r)));
+    const png = canvas.toDataURL("image/png");
+    ch.destroy();
+    return png;
+  }
+
+  async function exportXLSX(){
+    if (typeof ExcelJS === "undefined"){ toast("Composant Excel indisponible (connexion internet ?)"); return; }
+    exportXlsxBtn.disabled = true; const lbl = exportXlsxBtn.textContent; exportXlsxBtn.textContent = "Export…";
+    try {
+      const png = await chartPNG();
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Données");
+      ws.addRow(["Brassin", `${lot.fermenter_name||""} — ${lot.beer_name||""}${fruitIcon(lot)}`]);
+      ws.addRow(["Style", lot.style||""]);
+      ws.addRow(["DiM", lot.og!=null?sgToAbbr(+lot.og):"", "DiT", lot.dit!=null?sgToAbbr(+lot.dit):"", "DfT", lot.dft!=null?sgToAbbr(+lot.dft):""]);
+      ws.addRow(["Départ", lot.start_date||"", "15°C", lot.date_15c||"", "Garde", lot.date_garde||"", "Clôture", lot.end_date||""]);
+      ws.addRow(["Volume (hl)", lot.volume_hl??""]);
+      ws.addRow([]);
+      const hr = ws.addRow(["Date/heure","Phase","Densité (abr.)","Densité (SG)","°Plato","pH","Temp (°C)","Pression (bar)","Saisi par","Commentaire"]);
+      hr.font = { bold:true };
+      meas.forEach(m=> ws.addRow([ fmtDT(m.ts), m.phase||"",
+        m.densite_sg!=null? +sgToAbbr(+m.densite_sg):null, m.densite_sg??null,
+        m.densite_sg!=null? +sgToPlato(+m.densite_sg).toFixed(2):null,
+        m.ph??null, m.temp??null, m.pressure??null, m.operator||"", m.note||"" ]));
+      ws.columns.forEach(c=> c.width = 14);
+
+      if (adds.length){
+        const wa = wb.addWorksheet("Ajouts");
+        wa.addRow(["Date","Type","Désignation","N° lot","Quantité","Unité","Note"]).font = { bold:true };
+        adds.forEach(a=> wa.addRow([fmtDate(a.ts), a.type||"", a.label||"", a.batch_no||"", a.qty??null, a.unit||"", a.note||""]));
+        wa.columns.forEach(c=> c.width = 14);
+      }
+      if (packagings.length){
+        const wp = wb.addWorksheet("Conditionnement");
+        wp.addRow(["Format","Date","Volume (hl)"]).font = { bold:true };
+        packagings.forEach(p=> wp.addRow([packLabel(p.format), p.date||"", p.volume_hl??null]));
+        const cond = packagedTotal(); const vol = lot.volume_hl!=null?+lot.volume_hl:null;
+        wp.addRow([]); wp.addRow(["Total conditionné (hl)", cond.toFixed(1)]);
+        if (vol!=null){ wp.addRow(["En cuve (hl)", vol]); wp.addRow(["Pertes (hl)", (vol-cond).toFixed(1)]); }
+        wp.columns.forEach(c=> c.width = 18);
+      }
+
+      const wg = wb.addWorksheet("Graphique");
+      const imgId = wb.addImage({ base64: png.split(",")[1], extension:"png" });
+      wg.addImage(imgId, { tl:{col:0, row:0}, ext:{ width:1000, height:460 } });
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+      const url = URL.createObjectURL(blob); const a = el("a"); a.href = url;
+      a.download = `${lot.fermenter_name||"lot"}_${lot.beer_name||""}.xlsx`.replace(/\s+/g,"_");
+      a.click(); URL.revokeObjectURL(url);
+    } catch(e){ toast("Export impossible : "+e.message); }
+    exportXlsxBtn.disabled = false; exportXlsxBtn.textContent = lbl;
+  }
+  exportXlsxBtn.addEventListener("click", ()=>{ if(meas.length) exportXLSX(); else toast("Aucun relevé à exporter"); });
 
   sel.addEventListener("change", load);
   load();
