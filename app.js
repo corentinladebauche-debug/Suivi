@@ -1,5 +1,5 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24g";
+const APP_VERSION = "2026.11.24h";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
 
 "use strict";
@@ -901,7 +901,14 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     if (TREND) { TREND.destroy(); TREND = null; }
     trendLegend.innerHTML = "";
     if (!rows.length){ trendHint.textContent = "Aucun brassin de cette recette ne dispose de cette donnée."; return; }
-    const labels = rows.map(r=> fmtDate(r[dateKey]));
+    // Axe X à l'échelle du temps : chaque brassin à sa date réelle (écart = nombre de jours)
+    const xOf = (r)=> Date.parse(r[dateKey]+"T12:00:00Z");
+    const xs0 = rows.map(xOf), xFirst = Math.min(...xs0), xLast = Math.max(...xs0);
+    const xPad = Math.max(3*DAY_MS, (xLast - xFirst)*0.04);
+    // Largeur des barres : adaptée à l'écart le plus serré entre deux dates (4 à 16 px)
+    const sx = [...new Set(xs0)].sort((a,b)=>a-b), gaps = sx.slice(1).map((v,i)=> v - sx[i]);
+    const pxPerMs = Math.max(200, (trendCanvas.clientWidth || 700) - 90) / ((xLast - xFirst) + 2*xPad);
+    const barW = gaps.length ? Math.max(4, Math.min(16, Math.floor(Math.min(...gaps)*pxPerMs*0.8))) : 16;
     const vals = rows.map(r=> conv(r[k]));
     const mean = vals.reduce((s,x)=>s+x,0)/vals.length;
     const fmtsOf = (r)=> Object.keys(r.formats).sort((a,b)=> r.formats[b]-r.formats[a]);
@@ -926,17 +933,17 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
       ? Object.entries(r.formats).sort((a,b)=>b[1]-a[1]).map(([f,v])=> `${packLabel(f)} ${(+v).toFixed(1)} hl`).join(", ")
       : (r.keep>0 ? "soutirage uniquement" : "—");
     const main = isLoss
-      ? { type:"bar", label:"Pertes", data:vals, backgroundColor:rows.map(colorOf), borderRadius:4, maxBarThickness:28, order:1 }
-      : { type:"line", label:TREND_PARAMS.find(p=>p[0]===k)[1], data:vals, borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2, pointRadius:4, tension:0, order:1 };
+      ? { type:"bar", label:"Pertes", data:rows.map((r,i)=>({x:xOf(r), y:vals[i]})), backgroundColor:rows.map(colorOf), borderRadius:3, barThickness:barW, order:1 }
+      : { type:"line", label:TREND_PARAMS.find(p=>p[0]===k)[1], data:rows.map((r,i)=>({x:xOf(r), y:vals[i]})), borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2, pointRadius:4, tension:0, order:1 };
     TREND = new Chart(trendCanvas.getContext("2d"), {
-      data:{ labels, datasets:[ main,
-        { type:"line", label:"Moyenne", data:labels.map(()=> mean), borderColor:"#898781", borderWidth:1.2, borderDash:[5,4], pointRadius:0, order:0 } ] },
+      data:{ datasets:[ main,
+        { type:"line", label:"Moyenne", data:[{x:xFirst - xPad, y:mean},{x:xLast + xPad, y:mean}], borderColor:"#898781", borderWidth:1.2, borderDash:[5,4], pointRadius:0, order:0 } ] },
       options:{ responsive:true, maintainAspectRatio:false,
-        interaction:{ mode:"index", intersect:false },
-        scales:{ x:{ offset:true, ticks:{ font:{size:11}, maxRotation:45, autoSkip:true }, title:{display:true, text: isLoss ? "Date du 1er conditionnement" : "Date de brassage", font:{size:11}} },
+        interaction:{ mode:"nearest", intersect:false },
+        scales:{ x:{ type:"linear", min:xFirst - xPad, max:xLast + xPad, ticks:{ font:{size:11}, maxRotation:45, callback:(v)=> fmtDate(new Date(v).toISOString().slice(0,10)) }, title:{display:true, text: (isLoss ? "Date du 1er conditionnement" : "Date de brassage") + " (axe à l'échelle des jours)", font:{size:11}} },
                  y:{ ticks:{ font:{size:11} }, title:{display:true, text:yTitle, font:{size:11}}, beginAtZero: true, min: 0, grace: isLoss ? "30%" : "10%" } },
         plugins:{ legend:{ display:false },
-          tooltip:{ callbacks:{
+          tooltip:{ filter:(it)=> it.datasetIndex===0, callbacks:{
             title:(items)=>{ const r = rows[items[0].dataIndex]; return `${r.lot.fermenter_name} · brassé le ${fmtDate(r.start)}${isLoss ? ` · conditionné le ${fmtDate(r.lossDate)}` : ""}`; },
             label:(it)=> it.datasetIndex===1 ? `Moyenne : ${mean.toFixed(1)}${unit}` : `${it.dataset.label} : ${it.parsed.y}${unit}`,
             afterLabel:(it)=>{ if (!isLoss || it.datasetIndex!==0) return ""; const r = rows[it.dataIndex];
