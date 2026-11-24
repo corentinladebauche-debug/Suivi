@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>Suivi de fermentation — La Débauche</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css?v=2026.11.24b" />
   <script src="config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
@@ -28,7 +28,7 @@
   <!-- Application -->
   <div id="app" class="hidden">
     <header class="topbar">
-      <div class="brand small"><span class="logo">🍺</span><div><strong>Suivi de fermentation</strong><span class="muted"> · La Débauche</span></div></div>
+      <div class="brand small"><span class="logo">🍺</span><div><strong>Suivi de fermentation</strong><span class="muted"> · La Débauche</span><span id="app-version" class="muted" style="font-size:11px"></span></div></div>
       <nav id="tabs" class="tabs"></nav>
       <div id="user-box" class="user-box"></div>
     </header>
@@ -36,6 +36,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=2026.11.24b"></script>
 </body>
 </html>
