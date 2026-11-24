@@ -430,7 +430,7 @@ function addPanel(getLotId) {
 /* ============ RÉFÉRENCE RECETTE : moyenne ± 1,96 σ (≈ 95 %) jour par jour ============ */
 const REF_MIN_LOTS = 5;          // brassins clôturés requis (par recette ET par jour)
 const REF_Z95 = 1.96;            // bande 95 %
-const REF_KEYS = ["densite_sg","ph","temp"];
+const REF_KEYS = ["densite_sg","ph"];   // densité + pH (pas de température)
 const DAY_MS = 86400000;
 
 // Série d'un brassin -> valeur par jour entier (moyenne du jour, interpolation linéaire entre relevés, sans extrapolation)
@@ -491,7 +491,7 @@ function refLotsFor(lot){
 async function fetchRefMeasurements(ids){
   const out = []; const PAGE = 1000;
   for (let from=0; ; from+=PAGE){
-    const rows = await q(db.from("measurements").select("lot_id,ts,date,densite_sg,ph,temp,phase")
+    const rows = await q(db.from("measurements").select("lot_id,ts,date,densite_sg,ph,phase")
       .in("lot_id", ids).order("id").range(from, from+PAGE-1));
     out.push(...rows); if (rows.length < PAGE) break;
   }
@@ -620,7 +620,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     }
     ref = refCache[lot.id];
     refInfo.textContent = ref
-      ? `Bande colorée = plage 95 % de la recette « ${lot.beer_name} » (moyenne ± 1,96 écart-type, ${ref.n} brassins clôturés, du brassage au passage en garde) · trait pointillé fin = moyenne recette · point rouge = relevé hors plage.`
+      ? `Bande colorée = plage 95 % de la recette « ${lot.beer_name} » pour la densité et le pH (moyenne ± 1,96 écart-type, ${ref.n} brassins clôturés, du brassage au passage en garde)${lot.status==="Active"?" — prolongée au-delà du dernier relevé : trajectoire attendue":""} · trait pointillé fin = moyenne recette · point rouge = relevé hors plage.`
       : `Plage recette indisponible : ${refLots.length} brassin(s) clôturé(s) de « ${lot.beer_name} » en référence (${REF_MIN_LOTS} requis).`;
     renderStats(); draw(); renderHist(); renderAdds(); renderTransfers(); renderPackagings(); renderRackings(); renderActions();
   }
@@ -821,8 +821,8 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     }
     const outDens = addBand("densite_sg","d","#92400e", (v)=>sgToAbbr(v));
     if (outDens) dens.forEach((p,i)=> outD[i] = outDens(p.x,p.y));
-    if (secondary==="ph" || secondary==="temp"){
-      const outSec = addBand(secondary,"s",secColor, (v)=> secondary==="ph" ? (+v).toFixed(2) : (+v).toFixed(1));
+    if (secondary==="ph"){
+      const outSec = addBand("ph","s",secColor, (v)=> (+v).toFixed(2));
       if (outSec) sec.forEach((p,i)=> outS[i] = outSec(p.x,p.y));
     }
     // Élargir les axes Y pour que la plage reste visible
@@ -835,6 +835,13 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     const sScale = { position:"right", min:sMin, max:sMax, grid:{drawOnChartArea:false},
       ticks:{ font:{size:11} }, title:{display:true,text:secLabel,font:{size:11}} };
     if (sStep) sScale.ticks.stepSize = sStep;
+    // Étendre l'axe X à toute la plage recette : sur un brassin en cours, on voit la trajectoire attendue au-delà du dernier relevé
+    const bandX = bandDatasets.flatMap(ds=> ds.data.map(p=>p.x));
+    if (bandX.length){
+      const bMin = Math.min(...bandX), bMax = Math.max(...bandX), pad = 12*3600*1000;
+      xMin = (xMin===undefined) ? bMin - pad : Math.min(xMin, bMin - pad);
+      xMax = (xMax===undefined) ? bMax + pad : Math.max(xMax, bMax + pad);
+    }
     const RED = "#dc2626";
 
     if (CHART) CHART.destroy();
