@@ -1,3 +1,7 @@
+// Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
+const APP_VERSION = "2026.11.24b";
+{ const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
+
 "use strict";
 
 /* ============================ Client Supabase ============================ */
@@ -803,7 +807,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
       sMax = Math.ceil(Math.max(3, ...sv));
       sStep = 0.5;
     }
-    // ---- Plage recette (95 %) : densité + série de droite si pH ou température ----
+    // ---- Plage recette (95 %) : densité + pH (pas de température) ----
     const gardeT = lot.date_garde ? new Date(lot.date_garde+"T23:59:59Z").getTime() : Infinity;
     const bandDatasets = []; const outD = [], outS = [];
     function addBand(key, axis, color, fmt){
@@ -828,7 +832,6 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     // Élargir les axes Y pour que la plage reste visible
     bandDatasets.filter(ds=>ds._mean).forEach(ds=> ds.data.forEach(p=>{
       if (ds.yAxisID==="d"){ dMin = Math.min(dMin, p.lo); dMax = Math.max(dMax, p.hi); }
-      else if (secondary==="temp"){ sMin = Math.min(sMin, Math.floor(p.lo/5)*5); sMax = Math.max(sMax, Math.ceil(p.hi/5)*5); }
       else { sMin = Math.min(sMin, p.lo); sMax = Math.max(sMax, p.hi); }
     }));
 
