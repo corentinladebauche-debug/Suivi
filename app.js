@@ -1,5 +1,5 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24h";
+const APP_VERSION = "2026.11.24i";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
 
 "use strict";
@@ -296,6 +296,7 @@ function go(tab) {
   if (tab === "import" && !canWrite()) tab = "courbes";
   if (tab === "admin" && !isSup()) tab = "courbes";
   S.tab = tab; buildTabs();
+  cleanupCharts(true); CHART = null;
   const v = $("#view"); v.innerHTML = "";
   if (tab==="saisie") viewSaisie(v);
   else if (tab==="courbes") viewCourbes(v);
@@ -559,6 +560,30 @@ const fetchRefMeasurements = (ids)=> fetchAllByLots("measurements", "lot_id,ts,d
 const hexA = (hex, a)=>{ const n = parseInt(hex.slice(1),16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; };
 
 let CHART = null;
+
+// ---- Gestion mémoire des graphiques ----
+// Les navigateurs (Safari iPhone/iPad surtout) plafonnent la mémoire des zones de dessin :
+// tout graphique non détruit finit par bloquer l'affichage des suivants.
+function freeChart(c){
+  if (!c) return;
+  const cv = c.canvas;
+  try { c.destroy(); } catch(_){}
+  if (cv && !cv.isConnected){ cv.width = 0; cv.height = 0; }   // libère la mémoire tout de suite
+}
+function cleanupCharts(all){
+  if (!window.Chart || !Chart.instances) return;
+  Object.values(Chart.instances).forEach(c=>{
+    if (c.canvas && c.canvas._keep) return;                      // export en cours
+    if (all || !c.canvas || !c.canvas.isConnected) freeChart(c);
+  });
+}
+function newChart(canvas, cfg){
+  cleanupCharts(false);                                          // graphiques des vues fermées
+  const old = Chart.getChart(canvas); if (old) old.destroy();    // ancien graphique sur cette zone
+  cfg.options = cfg.options || {};
+  if (cfg.options.devicePixelRatio == null) cfg.options.devicePixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  return new Chart(canvas.getContext("2d"), cfg);
+}
 function viewCourbes(root){ lotCurves(root, S.lots.filter(l=>l.status==="Active"), "Aucun brassin en cours.", false); }
 function viewArchives(root){ lotCurves(root, S.lots.filter(l=>l.status!=="Active"), "Aucun brassin archivé.", true); }
 
@@ -614,7 +639,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   const seg = el("div",{class:"seg"}); let secondary = "temp";
   [["temp","T°"],["ph","pH"],["pressure","Bar"]].forEach(([k,l])=>{
     const b = el("button",{class:k===secondary?"active":""}, l);
-    b.addEventListener("click",()=>{ secondary=k; [...seg.children].forEach(c=>c.classList.remove("active")); b.classList.add("active"); avgMode ? drawAvg() : draw(); });
+    b.addEventListener("click",()=>{ secondary=k; [...seg.children].forEach(c=>c.classList.remove("active")); b.classList.add("active"); safely(avgMode ? drawAvg : draw); });
     if (k==="pressure") b.dataset.k = "pressure";
     seg.appendChild(b);
   });
@@ -641,7 +666,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   const trendHint = el("p",{class:"hint",style:"margin-top:4px"}); trendCard.appendChild(trendHint);
   root.appendChild(trendCard);
   let TREND = null;
-  trendSel.addEventListener("change", ()=> drawTrend());
+  trendSel.addEventListener("change", ()=> safely(drawTrend));
   const refCache = {};   // lot.id -> référence recette (null si < 5 brassins)
   let ref = null;
 
@@ -678,9 +703,13 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
 
   let meas = [], adds = [], transfers = [], packagings = [], rackings = [], lot = null;
 
+  let loadSeq = 0;
+  const safely = (fn)=>{ try { fn(); } catch(e){ console.error(e); toast("Affichage du graphique impossible : " + e.message); } };
   async function load() {
-    if (sel.value === "avg") { await loadAvg(); return; }
+    const my = ++loadSeq;
+    if (sel.value === "avg") { await loadAvg(my); return; }
     avgMode = false;
+    if (TREND){ freeChart(TREND); TREND = null; }
     [histCard, addsCard, transCard, packCard, rackCard, exportBtn, exportXlsxBtn, chartHint].forEach(c=> c.classList.remove("hidden"));
     trendCard.classList.add("hidden");
     [...seg.children].forEach(b=> b.classList.remove("hidden"));
@@ -711,7 +740,8 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     refInfo.textContent = ref
       ? `Bande colorée = plage 95 % de la recette « ${lot.beer_name} » pour la densité et le pH (moyenne ± 1,96 écart-type, ${ref.n} brassins clôturés, du brassage au passage en garde)${lot.status==="Active"?" — prolongée au-delà du dernier relevé : trajectoire attendue":""} · trait pointillé fin = moyenne recette · point rouge = relevé hors plage.`
       : `Plage recette indisponible : ${refLots.length} brassin(s) clôturé(s) de « ${lot.beer_name} » en référence (${REF_MIN_LOTS} requis).`;
-    renderStats(); draw(); renderHist(); renderAdds(); renderTransfers(); renderPackagings(); renderRackings(); renderActions();
+    if (my !== loadSeq) return;   // un autre brassin a été choisi entre-temps
+    renderStats(); safely(draw); renderHist(); renderAdds(); renderTransfers(); renderPackagings(); renderRackings(); renderActions();
   }
 
   packAdd.addEventListener("click", ()=> lot && editPackaging({ lot_id: lot.id, date: (lot.end_date||today()) }, load));
@@ -848,7 +878,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   const avgCache = {}; let avg = null;
   const abr1 = (sg)=> ((sg-1)*1000).toFixed(1);
 
-  async function loadAvg(){
+  async function loadAvg(my){
     avgMode = true; lot = null;
     const name = recipeSel.value;
     [histCard, addsCard, transCard, packCard, rackCard, exportBtn, exportXlsxBtn, chartHint].forEach(c=> c.classList.add("hidden"));
@@ -868,8 +898,9 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
       }
       avg = avgCache[name];
     } catch(e){ toast(e.message); return; }
-    renderAvgStats(); drawAvg();
-    trendCard.classList.remove("hidden"); drawTrend();
+    if (my !== loadSeq) return;
+    renderAvgStats(); safely(drawAvg);
+    trendCard.classList.remove("hidden"); safely(drawTrend);
     refInfo.textContent = `Moyenne de ${avg.lots.length} brassins clôturés de « ${name} », du brassage au passage en garde (date officielle, sinon dernier relevé de densité). `
       + `Densité et pH : trait plein = moyenne, bande = plage 95 % (moyenne ± 1,96 écart-type, tracée là où au moins ${REF_MIN_LOTS} brassins ont une valeur). Température : moyenne seule. `
       + `Repères : fin moyenne des relevés de densité (= jours de fermentation) et 1er conditionnement moyen. Une répartition dans 2 cuves compte pour 1 brassin.`;
@@ -935,7 +966,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     const main = isLoss
       ? { type:"bar", label:"Pertes", data:rows.map((r,i)=>({x:xOf(r), y:vals[i]})), backgroundColor:rows.map(colorOf), borderRadius:3, barThickness:barW, order:1 }
       : { type:"line", label:TREND_PARAMS.find(p=>p[0]===k)[1], data:rows.map((r,i)=>({x:xOf(r), y:vals[i]})), borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2, pointRadius:4, tension:0, order:1 };
-    TREND = new Chart(trendCanvas.getContext("2d"), {
+    TREND = newChart(trendCanvas, {
       data:{ datasets:[ main,
         { type:"line", label:"Moyenne", data:[{x:xFirst - xPad, y:mean},{x:xLast + xPad, y:mean}], borderColor:"#898781", borderWidth:1.2, borderDash:[5,4], pointRadius:0, order:0 } ] },
       options:{ responsive:true, maintainAspectRatio:false,
@@ -1004,8 +1035,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     const sScale = { position:"right", min:sMin, max:sMax, grid:{drawOnChartArea:false}, ticks:{font:{size:11}}, title:{display:true,text:secLabel,font:{size:11}} };
     if (sStep) sScale.ticks.stepSize = sStep;
 
-    if (CHART) CHART.destroy();
-    CHART = new Chart(canvas.getContext("2d"), {
+    CHART = newChart(canvas, {
       type:"line",
       data:{ datasets: ds },
       options:{
@@ -1119,8 +1149,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     }
     const RED = "#dc2626";
 
-    if (CHART) CHART.destroy();
-    CHART = new Chart(canvas.getContext("2d"), {
+    CHART = newChart(canvas, {
       type:"line",
       data:{ datasets:[
         ...bandDatasets,
@@ -1223,6 +1252,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
         cx.restore();
       });
     }};
+    canvas._keep = true;
     const ch = new Chart(canvas.getContext("2d"), {
       type:"line",
       data:{ datasets:[
@@ -1240,7 +1270,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     });
     await new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r)));
     const png = canvas.toDataURL("image/png");
-    ch.destroy();
+    ch.destroy(); canvas.width = 0; canvas.height = 0;
     return png;
   }
 
