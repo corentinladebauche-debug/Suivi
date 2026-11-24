@@ -1,6 +1,14 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24i";
+const APP_VERSION = "2026.11.24j";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
+
+// Courbes sans animation : affichage instantané, et pas de moteur d'animation partagé
+// qui, bloqué par une seule erreur, empêcherait l'affichage de toutes les courbes suivantes.
+if (window.Chart) Chart.defaults.animation = false;
+
+// Toute erreur non gérée est affichée à l'écran (diagnostic)
+window.addEventListener("error", (e)=> { try { toast("Erreur : " + (e.message || e.error), 12000); } catch(_){} });
+window.addEventListener("unhandledrejection", (e)=> { try { toast("Erreur : " + ((e.reason && e.reason.message) || e.reason), 12000); } catch(_){} });
 
 "use strict";
 
@@ -11,7 +19,9 @@ const db = CONFIG_OK ? window.supabase.createClient(window.SUPABASE_URL, window.
 
 // Exécute une requête supabase-js et lève une erreur lisible
 async function q(builder) {
-  const { data, error } = await builder;
+  let timer;
+  const timeout = new Promise((_, rej)=> { timer = setTimeout(()=> rej(new Error("Pas de réponse de Supabase depuis 20 s (connexion ?)")), 20000); });
+  const { data, error } = await Promise.race([builder, timeout]).finally(()=> clearTimeout(timer));
   if (error) throw new Error(error.message || "Erreur Supabase");
   return data;
 }
@@ -64,9 +74,9 @@ const fmtDate = (s) => { const d = new Date(s); return d.toLocaleDateString("fr-
 const fmtDT = (s) => { const d = new Date(s); return d.toLocaleString("fr-FR",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); };
 
 let TOAST_T;
-function toast(msg) {
+function toast(msg, ms) {
   const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden");
-  clearTimeout(TOAST_T); TOAST_T = setTimeout(() => t.classList.add("hidden"), 2600);
+  clearTimeout(TOAST_T); TOAST_T = setTimeout(() => t.classList.add("hidden"), ms || 2600);
 }
 
 /* ============================ État & rôles ============================ */
@@ -975,9 +985,9 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
                  y:{ ticks:{ font:{size:11} }, title:{display:true, text:yTitle, font:{size:11}}, beginAtZero: true, min: 0, grace: isLoss ? "30%" : "10%" } },
         plugins:{ legend:{ display:false },
           tooltip:{ filter:(it)=> it.datasetIndex===0, callbacks:{
-            title:(items)=>{ const r = rows[items[0].dataIndex]; return `${r.lot.fermenter_name} · brassé le ${fmtDate(r.start)}${isLoss ? ` · conditionné le ${fmtDate(r.lossDate)}` : ""}`; },
+            title:(items)=>{ if (!items.length || !rows[items[0].dataIndex]) return ""; const r = rows[items[0].dataIndex]; return `${r.lot.fermenter_name} · brassé le ${fmtDate(r.start)}${isLoss ? ` · conditionné le ${fmtDate(r.lossDate)}` : ""}`; },
             label:(it)=> it.datasetIndex===1 ? `Moyenne : ${mean.toFixed(1)}${unit}` : `${it.dataset.label} : ${it.parsed.y}${unit}`,
-            afterLabel:(it)=>{ if (!isLoss || it.datasetIndex!==0) return ""; const r = rows[it.dataIndex];
+            afterLabel:(it)=>{ if (!isLoss || it.datasetIndex!==0 || !rows[it.dataIndex]) return ""; const r = rows[it.dataIndex];
               return [`${fmtFormats(r)}`, `Volume ${r.vol} hl · conditionné ${r.cond.toFixed(1)} hl${r.keep>0?` · soutiré ${r.keep.toFixed(1)} hl`:""}`]; },
           } } } },
       plugins:[ mixedLabels ]
