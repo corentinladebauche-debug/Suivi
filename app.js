@@ -1,5 +1,5 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24d";
+const APP_VERSION = "2026.11.24f";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
 
 "use strict";
@@ -106,6 +106,8 @@ const STYLES = ["Lager","IPA","NEIPA","Belge","Noir","Sour/fruits"];
 const PACK_FORMATS = ["c33","c44","c50","b33","b75","kk","inox"];
 // Destinations de soutirage
 const RACK_DESTS = ["IBC","Cuve de service","Barriques","Drain"];
+const PACK_COLORS = { c33:"#2a78d6", c44:"#1baf7a", c50:"#6250d6", b33:"#eb6834", b75:"#e34948", kk:"#eda100", inox:"#d55181", soutirage:"#5f5e5a" };
+const MIXED_COLOR = "#c3c2b7";   // brassin conditionné en plusieurs formats
 const PACK_LABELS = { c33:"Canette 33cl", c44:"Canette 44cl", c50:"Canette 50cl", b33:"Bouteille 33cl", b75:"Bouteille 75cl", kk:"Keykeg", inox:"Fût inox" };
 const packLabel = (f)=> PACK_LABELS[f] || f;
 // Icône fruits : bières avec fruits OU de style Sour/fruits (permanentes comme éphémères)
@@ -496,33 +498,42 @@ function computeRecipeRef(lots, meas, keys = REF_KEYS, minN = REF_MIN_LOTS){
   return res;
 }
 
-// Indicateurs moyens d'une recette (moyenne sur les brassins qui disposent de la donnée ; n = nb de brassins utilisés)
-function computeRecipeStats(lots, meas, packs, racks){
+// Indicateurs par brassin (une ligne par brassin ; null quand la donnée manque)
+function computeLotRows(lots, meas, packs, racks){
   const by = (arr)=>{ const o={}; arr.forEach(x=> (o[x.lot_id] ??= []).push(x)); return o; };
   const M = by(meas), P = by(packs), R = by(racks);
   const days = (a,b)=> Math.round((Date.parse(b+"T12:00:00Z") - Date.parse(a+"T12:00:00Z"))/DAY_MS);
-  const acc = { og:[], fg:[], att:[], dFerm:[], dTank:[], loss:[] };
-  lots.forEach(l=>{
+  return lots.map(l=>{
     const ms = (M[l.id]||[]).slice().sort((a,b)=> String(a.ts).localeCompare(String(b.ts)));
     const dens = ms.filter(m=>m.densite_sg!=null);
     const og = l.og!=null ? +l.og : (dens[0] ? +dens[0].densite_sg : null);
     const fg = dens.length ? +dens[dens.length-1].densite_sg : null;
-    if (og!=null) acc.og.push(og);
-    if (fg!=null) acc.fg.push(fg);
-    const att = attenuation(og, fg); if (att!=null) acc.att.push(att);
     // Jours de fermentation : jusqu'au dernier relevé de densité (date officielle de garde seulement s'il n'y a aucun relevé)
     const lastD = dens.length ? (dens[dens.length-1].date || String(dens[dens.length-1].ts).slice(0,10)) : null;
     const g = lastD || l.date_garde;
-    if (g && l.start_date) acc.dFerm.push(days(l.start_date, g));
-    const pk = (P[l.id]||[]).filter(p=>p.date).map(p=>p.date).sort();
-    if (pk.length && l.start_date) acc.dTank.push(days(l.start_date, pk[0]));
+    const pks = (P[l.id]||[]), rks = (R[l.id]||[]);
+    const pkDates = pks.filter(p=>p.date).map(p=>p.date).sort();
+    const rkDates = rks.filter(r=>r.date).map(r=>r.date).sort();
     const vol = l.volume_hl!=null ? +l.volume_hl : null;
-    const cond = (P[l.id]||[]).reduce((s,p)=> s+(p.volume_hl!=null?+p.volume_hl:0), 0);
-    const keep = (R[l.id]||[]).filter(r=> r.destination!=="Drain").reduce((s,r)=> s+(r.volume_hl!=null?+r.volume_hl:0), 0);
-    if (vol && (cond>0 || keep>0)) acc.loss.push((vol - cond - keep)/vol*100);
+    const cond = pks.reduce((s,p)=> s+(p.volume_hl!=null?+p.volume_hl:0), 0);
+    const keep = rks.filter(r=> r.destination!=="Drain").reduce((s,r)=> s+(r.volume_hl!=null?+r.volume_hl:0), 0);
+    const formats = {}; pks.forEach(p=>{ if (p.format) formats[p.format] = (formats[p.format]||0) + (p.volume_hl!=null?+p.volume_hl:0); });
+    const mainFmt = Object.keys(formats).sort((a,b)=> formats[b]-formats[a])[0] || (rks.length ? "soutirage" : null);
+    return {
+      lot: l, start: l.start_date, og, fg, att: attenuation(og, fg),
+      dFerm: (g && l.start_date) ? days(l.start_date, g) : null,
+      dTank: (pkDates.length && l.start_date) ? days(l.start_date, pkDates[0]) : null,
+      loss: (vol && (cond>0 || keep>0)) ? (vol - cond - keep)/vol*100 : null,
+      lossDate: pkDates[0] || rkDates[0] || null,   // date de conditionnement (à défaut, de soutirage)
+      formats, mainFmt, vol, cond, keep,
+    };
   });
-  const avg = (a)=> a.length ? { v: a.reduce((s,x)=>s+x,0)/a.length, n: a.length } : null;
-  const out = {}; Object.keys(acc).forEach(k=> out[k] = avg(acc[k])); return out;
+}
+
+// Indicateurs moyens d'une recette (moyenne sur les brassins qui disposent de la donnée ; n = nb de brassins utilisés)
+function computeRecipeStats(rows){
+  const avg = (k)=>{ const a = rows.map(r=>r[k]).filter(v=>v!=null); return a.length ? { v: a.reduce((s,x)=>s+x,0)/a.length, n: a.length } : null; };
+  const out = {}; ["og","fg","att","dFerm","dTank","loss"].forEach(k=> out[k] = avg(k)); return out;
 }
 
 // Brassins clôturés d'une recette, un par date de brassage (une répartition = 1 seul brassin), sauf la date exclue.
@@ -613,6 +624,24 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   const chartHint = el("p",{class:"hint"},"Densité à gauche (◆ DiM · × DiT · ligne pointillée DfT) · série à droite. Repères verticaux : vert = ajouts · violet = transferts · sarcelle = phases (15°C, Garde) · rose = conditionnements."); chartCard.appendChild(chartHint);
   const refInfo = el("p",{class:"hint",style:"margin-top:2px"}); chartCard.appendChild(refInfo);
   root.appendChild(chartCard);
+
+  // Encart « Évolution par brassin » (entrée Moyenne recette uniquement)
+  const TREND_PARAMS = [
+    ["og","Densité initiale"], ["fg","Densité finale"], ["att","Taux d'atténuation"],
+    ["dFerm","Jours de fermentation"], ["dTank","Jours en fermenteur"], ["loss","Taux de pertes"] ];
+  const trendCard = el("div",{class:"card mt hidden"});
+  const th = el("div",{class:"flexb"});
+  th.appendChild(el("h3",{style:"margin:0;flex:1"},"Évolution par brassin"));
+  const trendSel = el("select",{style:"max-width:240px"});
+  TREND_PARAMS.forEach(([k,l])=> trendSel.appendChild(el("option",{value:k}, l)));
+  th.appendChild(trendSel); trendCard.appendChild(th);
+  const trendWrap = el("div",{class:"chart-wrap mt"}); const trendCanvas = el("canvas");
+  trendWrap.appendChild(trendCanvas); trendCard.appendChild(trendWrap);
+  const trendLegend = el("div",{class:"mt",style:"display:flex;flex-wrap:wrap;gap:14px;font-size:12px"}); trendCard.appendChild(trendLegend);
+  const trendHint = el("p",{class:"hint",style:"margin-top:4px"}); trendCard.appendChild(trendHint);
+  root.appendChild(trendCard);
+  let TREND = null;
+  trendSel.addEventListener("change", ()=> drawTrend());
   const refCache = {};   // lot.id -> référence recette (null si < 5 brassins)
   let ref = null;
 
@@ -653,6 +682,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     if (sel.value === "avg") { await loadAvg(); return; }
     avgMode = false;
     [histCard, addsCard, transCard, packCard, rackCard, exportBtn, exportXlsxBtn, chartHint].forEach(c=> c.classList.remove("hidden"));
+    trendCard.classList.add("hidden");
     [...seg.children].forEach(b=> b.classList.remove("hidden"));
     lot = S.lots.find(l=>l.id==sel.value);
     try {
@@ -830,14 +860,16 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
         const lots = recipeClosedLots(name); const ids = lots.map(l=>l.id);
         const [ms, pk, rk] = await Promise.all([
           fetchRefMeasurements(ids),
-          fetchAllByLots("packagings","lot_id,date,volume_hl",ids).catch(()=>[]),
-          fetchAllByLots("rackings","lot_id,destination,volume_hl",ids).catch(()=>[]),
+          fetchAllByLots("packagings","lot_id,date,volume_hl,format",ids).catch(()=>[]),
+          fetchAllByLots("rackings","lot_id,destination,volume_hl,date",ids).catch(()=>[]),
         ]);
-        avgCache[name] = { lots, curves: computeRecipeRef(lots, ms, ["densite_sg","ph","temp"], AVG_MIN_LOTS), stats: computeRecipeStats(lots, ms, pk, rk) };
+        const rows = computeLotRows(lots, ms, pk, rk);
+        avgCache[name] = { lots, rows, curves: computeRecipeRef(lots, ms, ["densite_sg","ph","temp"], AVG_MIN_LOTS), stats: computeRecipeStats(rows) };
       }
       avg = avgCache[name];
     } catch(e){ toast(e.message); return; }
     renderAvgStats(); drawAvg();
+    trendCard.classList.remove("hidden"); drawTrend();
     refInfo.textContent = `Moyenne de ${avg.lots.length} brassins clôturés de « ${name} », du brassage au passage en garde (date officielle, sinon dernier relevé de densité). `
       + `Densité et pH : trait plein = moyenne, bande = plage 95 % (moyenne ± 1,96 écart-type, tracée là où au moins ${REF_MIN_LOTS} brassins ont une valeur). Température : moyenne seule. `
       + `Repères : fin moyenne des relevés de densité (= jours de fermentation) et 1er conditionnement moyen. Une répartition dans 2 cuves compte pour 1 brassin.`;
@@ -856,6 +888,73 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     add("Jours en fermenteur", st.dTank, (v)=> v.toFixed(1)+" j");
     add("Pertes moy.", st.loss, (v)=> v.toFixed(1)+" %");
     if (rc.dit!=null) stats.appendChild(el("div",{class:"stat"},`<div class="k">DiT / DfT recette</div><div class="v">${sgToAbbr(rc.dit)} / ${sgToAbbr(rc.dft)}</div>`));
+  }
+
+  function drawTrend(){
+    const k = trendSel.value, isLoss = k==="loss";
+    const abrV = (sg)=> +((sg-1)*1000).toFixed(1);
+    const conv = { og:abrV, fg:abrV, att:(v)=>+v.toFixed(1), dFerm:(v)=>v, dTank:(v)=>v, loss:(v)=>+v.toFixed(1) }[k];
+    const unit = { og:"", fg:"", att:" %", dFerm:" j", dTank:" j", loss:" %" }[k];
+    const yTitle = { og:"Densité initiale (abr.)", fg:"Densité finale (abr.)", att:"Atténuation apparente (%)", dFerm:"Jours (brassage → fin des densités)", dTank:"Jours (brassage → 1er conditionnement)", loss:"Pertes (%)" }[k];
+    const dateKey = isLoss ? "lossDate" : "start";
+    const rows = avg.rows.filter(r=> r[k]!=null && r[dateKey]).sort((a,b)=> a[dateKey].localeCompare(b[dateKey]));
+    if (TREND) { TREND.destroy(); TREND = null; }
+    trendLegend.innerHTML = "";
+    if (!rows.length){ trendHint.textContent = "Aucun brassin de cette recette ne dispose de cette donnée."; return; }
+    const labels = rows.map(r=> fmtDate(r[dateKey]));
+    const vals = rows.map(r=> conv(r[k]));
+    const mean = vals.reduce((s,x)=>s+x,0)/vals.length;
+    const fmtsOf = (r)=> Object.keys(r.formats).sort((a,b)=> r.formats[b]-r.formats[a]);
+    const colorOf = (r)=> fmtsOf(r).length >= 2 ? MIXED_COLOR : (PACK_COLORS[r.mainFmt] || "#888780");
+    // Au-dessus de chaque barre « plusieurs formats » : la liste des formats avec leur couleur
+    const mixedLabels = { id:"mixedLabels", afterDatasetsDraw(chart){
+      if (!isLoss) return;
+      const ctx = chart.ctx, meta = chart.getDatasetMeta(0);
+      ctx.save(); ctx.font = "10px system-ui"; ctx.textBaseline = "middle";
+      rows.forEach((r,i)=>{
+        const fm = fmtsOf(r); if (fm.length < 2 || !meta.data[i]) return;
+        const bar = meta.data[i];
+        fm.forEach((f,j)=>{
+          const y = bar.y - 8 - (fm.length-1-j)*12, w = 8 + 3 + ctx.measureText(f).width, x0 = bar.x - w/2;
+          ctx.fillStyle = PACK_COLORS[f] || "#888780"; ctx.fillRect(x0, y-4, 8, 8);
+          ctx.fillStyle = "#52514e"; ctx.fillText(f, x0 + 11, y);
+        });
+      });
+      ctx.restore();
+    } };
+    const fmtFormats = (r)=> Object.keys(r.formats).length
+      ? Object.entries(r.formats).sort((a,b)=>b[1]-a[1]).map(([f,v])=> `${packLabel(f)} ${(+v).toFixed(1)} hl`).join(", ")
+      : (r.keep>0 ? "soutirage uniquement" : "—");
+    const main = isLoss
+      ? { type:"bar", label:"Pertes", data:vals, backgroundColor:rows.map(colorOf), borderRadius:4, maxBarThickness:28, order:1 }
+      : { type:"line", label:TREND_PARAMS.find(p=>p[0]===k)[1], data:vals, borderColor:"#92400e", backgroundColor:"#92400e", borderWidth:2, pointRadius:4, tension:0, order:1 };
+    TREND = new Chart(trendCanvas.getContext("2d"), {
+      data:{ labels, datasets:[ main,
+        { type:"line", label:"Moyenne", data:labels.map(()=> mean), borderColor:"#898781", borderWidth:1.2, borderDash:[5,4], pointRadius:0, order:0 } ] },
+      options:{ responsive:true, maintainAspectRatio:false,
+        interaction:{ mode:"index", intersect:false },
+        scales:{ x:{ offset:true, ticks:{ font:{size:11}, maxRotation:45, autoSkip:true }, title:{display:true, text: isLoss ? "Date du 1er conditionnement" : "Date de brassage", font:{size:11}} },
+                 y:{ ticks:{ font:{size:11} }, title:{display:true, text:yTitle, font:{size:11}}, beginAtZero: isLoss, grace: isLoss ? "30%" : "10%" } },
+        plugins:{ legend:{ display:false },
+          tooltip:{ callbacks:{
+            title:(items)=>{ const r = rows[items[0].dataIndex]; return `${r.lot.fermenter_name} · brassé le ${fmtDate(r.start)}${isLoss ? ` · conditionné le ${fmtDate(r.lossDate)}` : ""}`; },
+            label:(it)=> it.datasetIndex===1 ? `Moyenne : ${mean.toFixed(1)}${unit}` : `${it.dataset.label} : ${it.parsed.y}${unit}`,
+            afterLabel:(it)=>{ if (!isLoss || it.datasetIndex!==0) return ""; const r = rows[it.dataIndex];
+              return [`${fmtFormats(r)}`, `Volume ${r.vol} hl · conditionné ${r.cond.toFixed(1)} hl${r.keep>0?` · soutiré ${r.keep.toFixed(1)} hl`:""}`]; },
+          } } } },
+      plugins:[ mixedLabels ]
+    });
+    if (isLoss){
+      const used = PACK_FORMATS.filter(f=> rows.some(r=> r.formats[f]!=null));
+      const sw = (c, txt)=> trendLegend.appendChild(el("span",{style:"display:flex;align-items:center;gap:5px"},
+        `<span style="width:10px;height:10px;border-radius:2px;background:${c}"></span>${txt}`));
+      used.forEach(f=> sw(PACK_COLORS[f], `${packLabel(f)} (${f})`));
+      if (rows.some(r=> fmtsOf(r).length >= 2)) sw(MIXED_COLOR, "Plusieurs formats (détaillés au-dessus de la barre)");
+      if (rows.some(r=> r.mainFmt==="soutirage")) sw(PACK_COLORS.soutirage, "Soutirage uniquement");
+      trendHint.textContent = `Couleur = format de conditionnement ; barre gris clair = plusieurs formats, listés au-dessus de la barre (volumes dans l'infobulle). Pertes = (volume − conditionné − soutiré hors drain) / volume. Trait pointillé = moyenne (${mean.toFixed(1)} %). ${rows.length} brassins.`;
+    } else {
+      trendHint.textContent = `Un point par brassin, classés par date de brassage. Trait pointillé = moyenne (${mean.toFixed(1)}${unit}). ${rows.length} brassins.`;
+    }
   }
 
   function drawAvg(){
