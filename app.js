@@ -1,5 +1,5 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24c";
+const APP_VERSION = "2026.11.24d";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
 
 "use strict";
@@ -510,7 +510,9 @@ function computeRecipeStats(lots, meas, packs, racks){
     if (og!=null) acc.og.push(og);
     if (fg!=null) acc.fg.push(fg);
     const att = attenuation(og, fg); if (att!=null) acc.att.push(att);
-    const g = gardeDateOf(l, ms);
+    // Jours de fermentation : jusqu'au dernier relevé de densité (date officielle de garde seulement s'il n'y a aucun relevé)
+    const lastD = dens.length ? (dens[dens.length-1].date || String(dens[dens.length-1].ts).slice(0,10)) : null;
+    const g = lastD || l.date_garde;
     if (g && l.start_date) acc.dFerm.push(days(l.start_date, g));
     const pk = (P[l.id]||[]).filter(p=>p.date).map(p=>p.date).sort();
     if (pk.length && l.start_date) acc.dTank.push(days(l.start_date, pk[0]));
@@ -838,7 +840,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     renderAvgStats(); drawAvg();
     refInfo.textContent = `Moyenne de ${avg.lots.length} brassins clôturés de « ${name} », du brassage au passage en garde (date officielle, sinon dernier relevé de densité). `
       + `Densité et pH : trait plein = moyenne, bande = plage 95 % (moyenne ± 1,96 écart-type, tracée là où au moins ${REF_MIN_LOTS} brassins ont une valeur). Température : moyenne seule. `
-      + `Repères : passage en garde moyen et 1er conditionnement moyen. Une répartition dans 2 cuves compte pour 1 brassin.`;
+      + `Repères : fin moyenne des relevés de densité (= jours de fermentation) et 1er conditionnement moyen. Une répartition dans 2 cuves compte pour 1 brassin.`;
   }
 
   function renderAvgStats(){
@@ -879,7 +881,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     if (rc.dit!=null) ds.push({ label:"DiT", data:[{x:0, y:+rc.dit}], yAxisID:"d", showLine:false, pointStyle:"crossRot", pointRadius:8, pointBorderWidth:2.5, borderColor:"#1d4ed8", backgroundColor:"#1d4ed8" });
 
     const markers = [];
-    if (st.dFerm) markers.push({ x: st.dFerm.v, label:`Garde ~J${st.dFerm.v.toFixed(1)}`, color:"#0d9488" });
+    if (st.dFerm) markers.push({ x: st.dFerm.v, label:`Fin densités ~J${st.dFerm.v.toFixed(1)}`, color:"#0d9488" });
     if (st.dTank) markers.push({ x: st.dTank.v, label:`1er condi ~J${st.dTank.v.toFixed(1)}`, color:"#db2777" });
 
     const xs = ds.flatMap(d=> d.data.map(p=>p.x)).concat(markers.map(m=>m.x));
