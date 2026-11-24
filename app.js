@@ -1,5 +1,5 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24b";
+const APP_VERSION = "2026.11.24c";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
 
 "use strict";
@@ -434,6 +434,7 @@ function addPanel(getLotId) {
 /* ============ RÉFÉRENCE RECETTE : moyenne ± 1,96 σ (≈ 95 %) jour par jour ============ */
 const REF_MIN_LOTS = 5;          // brassins clôturés requis (par recette ET par jour)
 const REF_Z95 = 1.96;            // bande 95 %
+const AVG_MIN_LOTS = 2;          // brassins clôturés requis pour l'entrée « Moyenne recette » (archives)
 const REF_KEYS = ["densite_sg","ph"];   // densité + pH (pas de température)
 const DAY_MS = 86400000;
 
@@ -454,19 +455,29 @@ function dailySeries(points){
   return out;
 }
 
+// Date de passage en garde d'un brassin : date officielle, sinon jour du dernier relevé de densité.
+function gardeDateOf(l, ms){
+  if (l.date_garde) return l.date_garde;
+  const ds = ms.filter(m=>m.densite_sg!=null).map(m=> m.date || String(m.ts).slice(0,10)).sort();
+  return ds.length ? ds[ds.length-1] : null;
+}
+
 // lots : brassins de référence ; meas : leurs relevés. Ne garde que brassage -> passage en Garde.
-function computeRecipeRef(lots, meas){
+// Points retenus si >= minN brassins ce jour-là ; la plage 95 % (lo/hi) n'existe que si >= REF_MIN_LOTS.
+function computeRecipeRef(lots, meas, keys = REF_KEYS, minN = REF_MIN_LOTS){
   const byLot = {}; meas.forEach(m=> (byLot[m.lot_id] ??= []).push(m));
-  const perKey = {}; REF_KEYS.forEach(k=> perKey[k] = new Map());   // key -> day -> [valeurs, une par brassin]
+  const perKey = {}; keys.forEach(k=> perKey[k] = new Map());   // key -> day -> [valeurs, une par brassin]
   lots.forEach(l=>{
     const start = Date.parse(l.start_date+"T12:00:00Z");
-    const ms = (byLot[l.id]||[]).filter(m=>{
+    const all = byLot[l.id]||[];
+    const cutoff = gardeDateOf(l, all);
+    const ms = all.filter(m=>{
       const ds = m.date || String(m.ts).slice(0,10);
       if (m.phase === "Garde") return false;
-      if (l.date_garde && ds > l.date_garde) return false;
+      if (cutoff && ds > cutoff) return false;
       return true;
     });
-    REF_KEYS.forEach(k=>{
+    keys.forEach(k=>{
       const pts = ms.filter(m=>m[k]!=null).map(m=>({ d: Math.round((Date.parse(m.ts)-start)/DAY_MS), v: +m[k] })).filter(p=>p.d>=0);
       if (k==="densite_sg" && l.og!=null && !pts.some(p=>p.d===0)) pts.push({ d:0, v:+l.og });  // DiM = jour 0
       if (!pts.length) return;
@@ -474,33 +485,63 @@ function computeRecipeRef(lots, meas){
     });
   });
   const res = { n: lots.length };
-  REF_KEYS.forEach(k=>{
-    res[k] = [...perKey[k].entries()].filter(([,vs])=> vs.length >= REF_MIN_LOTS).sort((a,b)=>a[0]-b[0]).map(([d,vs])=>{
+  keys.forEach(k=>{
+    res[k] = [...perKey[k].entries()].filter(([,vs])=> vs.length >= minN).sort((a,b)=>a[0]-b[0]).map(([d,vs])=>{
       const n = vs.length, mean = vs.reduce((s,x)=>s+x,0)/n;
-      const sd = Math.sqrt(vs.reduce((s,x)=>s+(x-mean)**2,0)/(n-1));
-      return { d, n, mean, sd, lo: mean - REF_Z95*sd, hi: mean + REF_Z95*sd };
+      const sd = n>1 ? Math.sqrt(vs.reduce((s,x)=>s+(x-mean)**2,0)/(n-1)) : 0;
+      const band = n >= REF_MIN_LOTS;
+      return { d, n, mean, sd, lo: band ? mean - REF_Z95*sd : null, hi: band ? mean + REF_Z95*sd : null };
     });
   });
   return res;
 }
 
-// Brassins clôturés de la même recette, sans le brassin consulté ni son jumeau de répartition (même date de brassage).
-function refLotsFor(lot){
-  const seen = new Set();
-  return S.lots.filter(l=> l.status!=="Active" && l.beer_name===lot.beer_name && l.start_date && l.start_date!==lot.start_date)
-    .sort((a,b)=> a.id-b.id)
-    .filter(l=>{ if (seen.has(l.start_date)) return false; seen.add(l.start_date); return true; });   // 1 brassin par date de brassage (répartitions)
+// Indicateurs moyens d'une recette (moyenne sur les brassins qui disposent de la donnée ; n = nb de brassins utilisés)
+function computeRecipeStats(lots, meas, packs, racks){
+  const by = (arr)=>{ const o={}; arr.forEach(x=> (o[x.lot_id] ??= []).push(x)); return o; };
+  const M = by(meas), P = by(packs), R = by(racks);
+  const days = (a,b)=> Math.round((Date.parse(b+"T12:00:00Z") - Date.parse(a+"T12:00:00Z"))/DAY_MS);
+  const acc = { og:[], fg:[], att:[], dFerm:[], dTank:[], loss:[] };
+  lots.forEach(l=>{
+    const ms = (M[l.id]||[]).slice().sort((a,b)=> String(a.ts).localeCompare(String(b.ts)));
+    const dens = ms.filter(m=>m.densite_sg!=null);
+    const og = l.og!=null ? +l.og : (dens[0] ? +dens[0].densite_sg : null);
+    const fg = dens.length ? +dens[dens.length-1].densite_sg : null;
+    if (og!=null) acc.og.push(og);
+    if (fg!=null) acc.fg.push(fg);
+    const att = attenuation(og, fg); if (att!=null) acc.att.push(att);
+    const g = gardeDateOf(l, ms);
+    if (g && l.start_date) acc.dFerm.push(days(l.start_date, g));
+    const pk = (P[l.id]||[]).filter(p=>p.date).map(p=>p.date).sort();
+    if (pk.length && l.start_date) acc.dTank.push(days(l.start_date, pk[0]));
+    const vol = l.volume_hl!=null ? +l.volume_hl : null;
+    const cond = (P[l.id]||[]).reduce((s,p)=> s+(p.volume_hl!=null?+p.volume_hl:0), 0);
+    const keep = (R[l.id]||[]).filter(r=> r.destination!=="Drain").reduce((s,r)=> s+(r.volume_hl!=null?+r.volume_hl:0), 0);
+    if (vol && (cond>0 || keep>0)) acc.loss.push((vol - cond - keep)/vol*100);
+  });
+  const avg = (a)=> a.length ? { v: a.reduce((s,x)=>s+x,0)/a.length, n: a.length } : null;
+  const out = {}; Object.keys(acc).forEach(k=> out[k] = avg(acc[k])); return out;
 }
 
-async function fetchRefMeasurements(ids){
+// Brassins clôturés d'une recette, un par date de brassage (une répartition = 1 seul brassin), sauf la date exclue.
+function recipeClosedLots(name, excludeStart){
+  const seen = new Set();
+  return S.lots.filter(l=> l.status!=="Active" && l.beer_name===name && l.start_date && l.start_date!==excludeStart)
+    .sort((a,b)=> a.id-b.id)
+    .filter(l=>{ if (seen.has(l.start_date)) return false; seen.add(l.start_date); return true; });
+}
+// Référence d'un brassin : sa recette, sans lui-même ni son jumeau de répartition (même date de brassage).
+const refLotsFor = (lot)=> recipeClosedLots(lot.beer_name, lot.start_date);
+
+async function fetchAllByLots(table, cols, ids){
   const out = []; const PAGE = 1000;
   for (let from=0; ; from+=PAGE){
-    const rows = await q(db.from("measurements").select("lot_id,ts,date,densite_sg,ph,phase")
-      .in("lot_id", ids).order("id").range(from, from+PAGE-1));
+    const rows = await q(db.from(table).select(cols).in("lot_id", ids).order("id").range(from, from+PAGE-1));
     out.push(...rows); if (rows.length < PAGE) break;
   }
   return out;
 }
+const fetchRefMeasurements = (ids)=> fetchAllByLots("measurements", "lot_id,ts,date,densite_sg,ph,temp,phase", ids);
 
 const hexA = (hex, a)=>{ const n = parseInt(hex.slice(1),16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; };
 
@@ -516,16 +557,23 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   const exportBtn = el("button",{class:"btn ghost"},"⬇ Export CSV");
   const exportXlsxBtn = el("button",{class:"btn ghost"},"⬇ Export XLSX");
   const top = el("div",{class:"flexb"});
+  let recipeSel = null, avgMode = false;
 
   if (byRecipe){
     const recipeOf = (l)=> RECIPES.find(r=>r.name===l.beer_name) ? l.beer_name : "Éphémères";
     const groups = {}; lots.forEach(l=>{ const g=recipeOf(l); (groups[g] ??= []).push(l); });
     const recipeNames = RECIPES.map(r=>r.name).filter(n=>groups[n]);
     if (groups["Éphémères"]) recipeNames.push("Éphémères");
-    const recipeSel = el("select");
+    recipeSel = el("select");
     recipeNames.forEach(n=> recipeSel.appendChild(el("option",{value:n}, `${n} (${groups[n].length})`)));
     const fillLots = ()=>{
       sel.innerHTML = "";
+      if (recipeSel.value !== "Éphémères"){
+        const nAvg = recipeClosedLots(recipeSel.value).length;
+        const o = el("option",{value:"avg"}, nAvg >= AVG_MIN_LOTS ? `📊 Moyenne recette (${nAvg} brassins)` : `📊 Moyenne recette — ${AVG_MIN_LOTS} brassins requis (${nAvg})`);
+        if (nAvg < AVG_MIN_LOTS) o.disabled = true;
+        sel.appendChild(o);
+      }
       (groups[recipeSel.value]||[]).slice()
         .sort((a,b)=> (b.end_date||"").localeCompare(a.end_date||""))
         .forEach(l=> sel.appendChild(el("option",{value:l.id},
@@ -553,13 +601,14 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   const seg = el("div",{class:"seg"}); let secondary = "temp";
   [["temp","T°"],["ph","pH"],["pressure","Bar"]].forEach(([k,l])=>{
     const b = el("button",{class:k===secondary?"active":""}, l);
-    b.addEventListener("click",()=>{ secondary=k; [...seg.children].forEach(c=>c.classList.remove("active")); b.classList.add("active"); draw(); });
+    b.addEventListener("click",()=>{ secondary=k; [...seg.children].forEach(c=>c.classList.remove("active")); b.classList.add("active"); avgMode ? drawAvg() : draw(); });
+    if (k==="pressure") b.dataset.k = "pressure";
     seg.appendChild(b);
   });
   ch.appendChild(seg); chartCard.appendChild(ch);
   const wrap = el("div",{class:"chart-wrap mt"}); const canvas = el("canvas");
   wrap.appendChild(canvas); chartCard.appendChild(wrap);
-  chartCard.appendChild(el("p",{class:"hint"},"Densité à gauche (◆ DiM · × DiT · ligne pointillée DfT) · série à droite. Repères verticaux : vert = ajouts · violet = transferts · sarcelle = phases (15°C, Garde) · rose = conditionnements."));
+  const chartHint = el("p",{class:"hint"},"Densité à gauche (◆ DiM · × DiT · ligne pointillée DfT) · série à droite. Repères verticaux : vert = ajouts · violet = transferts · sarcelle = phases (15°C, Garde) · rose = conditionnements."); chartCard.appendChild(chartHint);
   const refInfo = el("p",{class:"hint",style:"margin-top:2px"}); chartCard.appendChild(refInfo);
   root.appendChild(chartCard);
   const refCache = {};   // lot.id -> référence recette (null si < 5 brassins)
@@ -599,6 +648,10 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   let meas = [], adds = [], transfers = [], packagings = [], rackings = [], lot = null;
 
   async function load() {
+    if (sel.value === "avg") { await loadAvg(); return; }
+    avgMode = false;
+    [histCard, addsCard, transCard, packCard, rackCard, exportBtn, exportXlsxBtn, chartHint].forEach(c=> c.classList.remove("hidden"));
+    [...seg.children].forEach(b=> b.classList.remove("hidden"));
     lot = S.lots.find(l=>l.id==sel.value);
     try {
       [meas, adds] = await Promise.all([
@@ -759,6 +812,117 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     add("Phase", lot.phase);
   }
 
+  // ================= MOYENNE RECETTE (archives) =================
+  const avgCache = {}; let avg = null;
+  const abr1 = (sg)=> ((sg-1)*1000).toFixed(1);
+
+  async function loadAvg(){
+    avgMode = true; lot = null;
+    const name = recipeSel.value;
+    [histCard, addsCard, transCard, packCard, rackCard, exportBtn, exportXlsxBtn, chartHint].forEach(c=> c.classList.add("hidden"));
+    actions.innerHTML = "";
+    const pb = [...seg.children].find(b=> b.dataset.k==="pressure");
+    if (pb){ pb.classList.add("hidden"); if (secondary==="pressure") seg.children[0].click(); }
+    try {
+      if (!avgCache[name]){
+        const lots = recipeClosedLots(name); const ids = lots.map(l=>l.id);
+        const [ms, pk, rk] = await Promise.all([
+          fetchRefMeasurements(ids),
+          fetchAllByLots("packagings","lot_id,date,volume_hl",ids).catch(()=>[]),
+          fetchAllByLots("rackings","lot_id,destination,volume_hl",ids).catch(()=>[]),
+        ]);
+        avgCache[name] = { lots, curves: computeRecipeRef(lots, ms, ["densite_sg","ph","temp"], AVG_MIN_LOTS), stats: computeRecipeStats(lots, ms, pk, rk) };
+      }
+      avg = avgCache[name];
+    } catch(e){ toast(e.message); return; }
+    renderAvgStats(); drawAvg();
+    refInfo.textContent = `Moyenne de ${avg.lots.length} brassins clôturés de « ${name} », du brassage au passage en garde (date officielle, sinon dernier relevé de densité). `
+      + `Densité et pH : trait plein = moyenne, bande = plage 95 % (moyenne ± 1,96 écart-type, tracée là où au moins ${REF_MIN_LOTS} brassins ont une valeur). Température : moyenne seule. `
+      + `Repères : passage en garde moyen et 1er conditionnement moyen. Une répartition dans 2 cuves compte pour 1 brassin.`;
+  }
+
+  function renderAvgStats(){
+    const st = avg.stats, rc = RECIPES.find(r=>r.name===recipeSel.value) || {};
+    stats.innerHTML = "";
+    const add = (k, x, fmt)=> stats.appendChild(el("div",{class:"stat"},
+      `<div class="k">${k}</div><div class="v">${x ? fmt(x.v) : "—"}${x ? ` <span class="muted" style="font-size:11px;font-weight:400">(${x.n})</span>` : ""}</div>`));
+    stats.appendChild(el("div",{class:"stat"},`<div class="k">Brassins</div><div class="v">${avg.lots.length}</div>`));
+    add("Densité initiale moy.", st.og, abr1);
+    add("Densité finale moy.", st.fg, abr1);
+    add("Atténuation moy.", st.att, (v)=> v.toFixed(1)+" %");
+    add("Jours de fermentation", st.dFerm, (v)=> v.toFixed(1)+" j");
+    add("Jours en fermenteur", st.dTank, (v)=> v.toFixed(1)+" j");
+    add("Pertes moy.", st.loss, (v)=> v.toFixed(1)+" %");
+    if (rc.dit!=null) stats.appendChild(el("div",{class:"stat"},`<div class="k">DiT / DfT recette</div><div class="v">${sgToAbbr(rc.dit)} / ${sgToAbbr(rc.dft)}</div>`));
+  }
+
+  function drawAvg(){
+    const c = avg.curves, st = avg.stats, rc = RECIPES.find(r=>r.name===recipeSel.value) || {};
+    const secLabel = {temp:"Température (°C)",ph:"pH"}[secondary] || "Température (°C)";
+    const secColor = {temp:"#0e7490",ph:"#7c3aed"}[secondary] || "#0e7490";
+    const ds = [];
+    function band(key, axis, color, fmt, withBand){
+      const pts = c[key] || []; if (!pts.length) return;
+      const bp = pts.filter(p=>p.lo!=null);
+      if (withBand && bp.length){
+        ds.push({ label:"_lo", data:bp.map(p=>({x:p.d, y:p.lo})), yAxisID:axis, borderColor:"transparent", pointRadius:0, pointHitRadius:0, fill:false, tension:.25, _band:true, _noLegend:true },
+                { label:`Plage 95 % (${key==="densite_sg"?"densité":"pH"})`, data:bp.map(p=>({x:p.d, y:p.hi})), yAxisID:axis, borderColor:"transparent",
+                  backgroundColor:hexA(color,0.14), pointRadius:0, pointHitRadius:0, fill:"-1", tension:.25, _band:true });
+      }
+      ds.push({ label: key==="densite_sg" ? "Densité moyenne" : (key==="ph" ? "pH moyen" : "Température moyenne"),
+        data:pts.map(p=>({x:p.d, y:p.mean, lo:p.lo, hi:p.hi, n:p.n})), yAxisID:axis,
+        borderColor:color, backgroundColor:color, borderWidth: key==="densite_sg"?2.5:1.8, pointRadius:2, tension:.25, _mean:true, _fmt:fmt, _band:false });
+    }
+    band("densite_sg","d","#92400e", (v)=>sgToAbbr(v), true);
+    if (secondary==="ph") band("ph","s",secColor, (v)=>(+v).toFixed(2), true);
+    else band("temp","s",secColor, (v)=>(+v).toFixed(1), false);
+    if (rc.dit!=null) ds.push({ label:"DiT", data:[{x:0, y:+rc.dit}], yAxisID:"d", showLine:false, pointStyle:"crossRot", pointRadius:8, pointBorderWidth:2.5, borderColor:"#1d4ed8", backgroundColor:"#1d4ed8" });
+
+    const markers = [];
+    if (st.dFerm) markers.push({ x: st.dFerm.v, label:`Garde ~J${st.dFerm.v.toFixed(1)}`, color:"#0d9488" });
+    if (st.dTank) markers.push({ x: st.dTank.v, label:`1er condi ~J${st.dTank.v.toFixed(1)}`, color:"#db2777" });
+
+    const xs = ds.flatMap(d=> d.data.map(p=>p.x)).concat(markers.map(m=>m.x));
+    const xLast = xs.length ? Math.max(...xs) : 14;
+    const xMax = xLast + Math.max(1.5, xLast*0.12);   // marge pour les étiquettes de repères
+    // Axes
+    let dMin = 1.000, dMax = Math.max(1.060, rc.dit!=null ? +rc.dit : 0);
+    ds.filter(d=>d.yAxisID==="d" && d._mean).forEach(d=> d.data.forEach(p=>{ dMax = Math.max(dMax, p.hi ?? p.y); dMin = Math.min(dMin, p.lo ?? p.y); }));
+    if (rc.dft!=null) dMin = Math.min(dMin, +rc.dft);
+    const sv = ds.filter(d=>d.yAxisID==="s" && d._mean).flatMap(d=> d.data.flatMap(p=> [p.lo ?? p.y, p.hi ?? p.y]));
+    let sMin, sMax, sStep;
+    if (secondary==="ph"){ sMin = Math.min(3.5, ...sv); sMax = Math.max(5.2, ...sv); }
+    else { sMin = Math.floor(Math.min(-5, ...sv)/5)*5; sMax = Math.ceil(Math.max(25, ...sv)/5)*5; sStep = 5; }
+    const sScale = { position:"right", min:sMin, max:sMax, grid:{drawOnChartArea:false}, ticks:{font:{size:11}}, title:{display:true,text:secLabel,font:{size:11}} };
+    if (sStep) sScale.ticks.stepSize = sStep;
+
+    if (CHART) CHART.destroy();
+    CHART = new Chart(canvas.getContext("2d"), {
+      type:"line",
+      data:{ datasets: ds },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        interaction:{mode:"nearest",intersect:false},
+        scales:{
+          x:{ type:"linear", min:-0.5, max:xMax, ticks:{ callback:(v)=> Number.isInteger(v) ? "J"+v : "", font:{size:11} },
+              title:{display:true,text:"Jours depuis le brassage",font:{size:11}} },
+          d:{ position:"left", min:dMin, max:dMax, ticks:{ callback:(v)=>sgToAbbr(v), stepSize:0.010, font:{size:11} }, title:{display:true,text:"Densité (abr.)",font:{size:11}} },
+          s:sScale,
+        },
+        plugins:{
+          legend:{labels:{font:{size:12}, filter:(li, data)=> !data.datasets[li.datasetIndex]._noLegend}},
+          tooltip:{ filter:(it)=> !it.dataset._band, callbacks:{
+            title:(items)=> items.length ? "J"+Math.round(items[0].parsed.x) : "",
+            label:(it)=> it.dataset._mean
+              ? `${it.dataset.label} : ${it.dataset._fmt(it.raw.y)}${it.raw.lo!=null && it.dataset.label!=="Température moyenne" ? ` (plage ${it.dataset._fmt(it.raw.lo)} – ${it.dataset._fmt(it.raw.hi)})` : ""} · ${it.raw.n} brassins`
+              : `${it.dataset.label} : ${sgToAbbr(it.parsed.y)}`,
+          } },
+        },
+      },
+      plugins:[ addMarkersPlugin(markers), zeroTempLine(secondary==="temp"), dftLine(rc.dft!=null ? +rc.dft : null) ],
+    });
+  }
+
   function draw() {
     const startT = lot.start_date ? new Date(lot.start_date + "T12:00:00Z").getTime() : null;
     const dens = meas.filter(m=>m.densite_sg!=null).map(m=>({x:new Date(m.ts).getTime(), y:+m.densite_sg}));
@@ -811,7 +975,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     const gardeT = lot.date_garde ? new Date(lot.date_garde+"T23:59:59Z").getTime() : Infinity;
     const bandDatasets = []; const outD = [], outS = [];
     function addBand(key, axis, color, fmt){
-      const pts = (ref && startT) ? ref[key] : null;
+      const pts = (ref && startT) ? ref[key].filter(p=>p.lo!=null) : null;
       if (!pts || !pts.length) return null;
       const at = (d)=> startT + d*DAY_MS;
       bandDatasets.push(
