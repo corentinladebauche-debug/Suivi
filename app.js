@@ -1,5 +1,5 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24f";
+const APP_VERSION = "2026.11.24g";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
 
 "use strict";
@@ -934,7 +934,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
       options:{ responsive:true, maintainAspectRatio:false,
         interaction:{ mode:"index", intersect:false },
         scales:{ x:{ offset:true, ticks:{ font:{size:11}, maxRotation:45, autoSkip:true }, title:{display:true, text: isLoss ? "Date du 1er conditionnement" : "Date de brassage", font:{size:11}} },
-                 y:{ ticks:{ font:{size:11} }, title:{display:true, text:yTitle, font:{size:11}}, beginAtZero: isLoss, grace: isLoss ? "30%" : "10%" } },
+                 y:{ ticks:{ font:{size:11} }, title:{display:true, text:yTitle, font:{size:11}}, beginAtZero: true, min: 0, grace: isLoss ? "30%" : "10%" } },
         plugins:{ legend:{ display:false },
           tooltip:{ callbacks:{
             title:(items)=>{ const r = rows[items[0].dataIndex]; return `${r.lot.fermenter_name} · brassé le ${fmtDate(r.start)}${isLoss ? ` · conditionné le ${fmtDate(r.lossDate)}` : ""}`; },
