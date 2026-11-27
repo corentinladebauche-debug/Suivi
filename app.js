@@ -1,5 +1,5 @@
 // Version de l'application (à incrémenter à chaque livraison, avec le ?v= de index.html)
-const APP_VERSION = "2026.11.24j";
+const APP_VERSION = "2026.11.27a";
 { const _v = document.getElementById("app-version"); if (_v) _v.textContent = " · v" + APP_VERSION; }
 
 // Courbes sans animation : affichage instantané, et pas de moteur d'animation partagé
@@ -622,10 +622,11 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
         if (nAvg < AVG_MIN_LOTS) o.disabled = true;
         sel.appendChild(o);
       }
+      const eph = recipeSel.value === "Éphémères";
       (groups[recipeSel.value]||[]).slice()
-        .sort((a,b)=> (b.end_date||"").localeCompare(a.end_date||""))
+        .sort((a,b)=> (eph ? (a.beer_name||"").localeCompare(b.beer_name||"", "fr") : 0) || (b.end_date||"").localeCompare(a.end_date||""))
         .forEach(l=> sel.appendChild(el("option",{value:l.id},
-          `${l.fermenter_name}${fruitIcon(l)} · ${l.start_date?fmtDate(l.start_date):"?"} → ${l.end_date?fmtDate(l.end_date):"?"}`)));
+          `${eph ? l.beer_name + " · " : ""}${l.fermenter_name}${fruitIcon(l)} · ${l.start_date?fmtDate(l.start_date):"?"} → ${l.end_date?fmtDate(l.end_date):"?"}`)));
     };
     fillLots();
     recipeSel.addEventListener("change", ()=>{ fillLots(); load(); });
@@ -639,6 +640,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
     top.append(selWrap, exportBtn, exportXlsxBtn);
   }
   head.appendChild(top);
+  const lotTitle = el("div",{style:"margin-top:12px;font-size:18px;font-weight:600"}); head.appendChild(lotTitle);
   const stats = el("div",{class:"stats"}); head.appendChild(stats);
   const actions = el("div",{class:"flexb mt",style:"gap:8px;flex-wrap:wrap"}); head.appendChild(actions);
   root.appendChild(head);
@@ -865,6 +867,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
   }
 
   function renderStats() {
+    lotTitle.innerHTML = `${lot.beer_name||"?"}${fruitIcon(lot)} <span class="muted" style="font-size:13px;font-weight:400">· ${lot.style||"style non renseigné"}${RECIPES.find(r=>r.name===lot.beer_name)?"":" · éphémère"} · ${lot.fermenter_name||""} · brassé le ${lot.start_date?fmtDate(lot.start_date):"?"}${lot.end_date?` · clôturé le ${fmtDate(lot.end_date)}`:""}</span>`;
     const withD = meas.filter(m=>m.densite_sg!=null);
     const last = withD[withD.length-1];
     const og = lot.og || withD[0]?.densite_sg;
@@ -918,6 +921,7 @@ function lotCurves(root, lots, emptyMsg, byRecipe) {
 
   function renderAvgStats(){
     const st = avg.stats, rc = RECIPES.find(r=>r.name===recipeSel.value) || {};
+    lotTitle.innerHTML = `${recipeSel.value} <span class="muted" style="font-size:13px;font-weight:400">· moyenne de la recette${rc.style?` · ${rc.style}`:""}</span>`;
     stats.innerHTML = "";
     const add = (k, x, fmt)=> stats.appendChild(el("div",{class:"stat"},
       `<div class="k">${k}</div><div class="v">${x ? fmt(x.v) : "—"}${x ? ` <span class="muted" style="font-size:11px;font-weight:400">(${x.n})</span>` : ""}</div>`));
